@@ -128,7 +128,7 @@ function maybeUpdateInBackground(
       if (storageUrl) {
         remoteSha = await fetchUrlSha(storageUrl, config);
       } else if (s3Bucket) {
-        remoteSha = await fetchS3Sha(repoRoot);
+        remoteSha = await fetchS3Sha(config);
       }
 
       if (!remoteSha) {
@@ -154,7 +154,7 @@ function maybeUpdateInBackground(
         if (storageUrl) {
           await downloadUrl(storageUrl, tmpFile, config);
         } else {
-          await downloadS3(tmpFile, repoRoot);
+          await downloadS3(tmpFile, config);
         }
 
         // Extract.
@@ -223,26 +223,87 @@ async function downloadUrl(
   writeFileSync(destPath, buffer);
 }
 
-async function fetchS3Sha(repoRoot: string): Promise<string | null> {
+async function fetchS3Sha(config: CodeIndexConfig): Promise<string | null> {
+  const bucket = config.storage?.s3_bucket;
+  const prefix = config.storage?.s3_prefix || "vectors";
+  if (!bucket) return null;
   try {
     const result = execSync(
-      resolve(repoRoot, "scripts", "pull-code-index-vectors.sh") +
-        " --quiet 2>/dev/null; cat .code-index/.vectors-sha256 2>/dev/null",
-      { cwd: repoRoot, timeout: 60000, encoding: "utf-8" }
+      `aws s3 cp "s3://${bucket}/${prefix}/latest.sha256" - 2>/dev/null`,
+      { timeout: 15000, encoding: "utf-8" }
     );
-    return result.trim() || null;
+    return result.trim().split(/\s/)[0] || null;
   } catch {
     return null;
   }
 }
 
-async function downloadS3(destPath: string, repoRoot: string): Promise<void> {
-  // For S3, delegate to the pull script which handles auth, profile detection, etc.
-  execSync(
-    resolve(repoRoot, "scripts", "pull-code-index-vectors.sh") +
-      " --force --quiet",
-    { cwd: repoRoot, timeout: 120000, env: { ...process.env } }
-  );
+async function downloadS3(
+  destPath: string,
+  config: CodeIndexConfig
+): Promise<void> {
+  const bucket = config.storage?.s3_bucket;
+  const prefix = config.storage?.s3_prefix || "vectors";
+  execSync(`aws s3 cp "s3://${bucket}/${prefix}/latest.tar.gz" "${destPath}" --quiet`, {
+    timeout: 120000,
+    env: { ...process.env },
+  });
+}
+
+/**
+ * Initial pull of the vector database from configured storage.
+ * Blocks until complete — only called when no local database exists.
+ */
+async function initialPull(
+  repoRoot: string,
+  config: CodeIndexConfig
+): Promise<void> {
+  const storageUrl = config.storage?.url;
+  const s3Bucket = config.storage?.s3_bucket;
+
+  if (!storageUrl && !s3Bucket) {
+    // Try the legacy pull script as a fallback.
+    const pullScript = resolve(repoRoot, "scripts", "pull-code-index-vectors.sh");
+    if (existsSync(pullScript)) {
+      execSync(pullScript + " --quiet", {
+        cwd: repoRoot,
+        timeout: 60000,
+        env: { ...process.env },
+      });
+    }
+    return;
+  }
+
+  const indexDir = resolve(repoRoot, ".code-index");
+  const tmpFile = resolve(tmpdir(), `code-index-init-${Date.now()}.tar.gz`);
+
+  try {
+    if (storageUrl) {
+      await downloadUrl(storageUrl, tmpFile, config);
+    } else {
+      await downloadS3(tmpFile, config);
+    }
+
+    mkdirSync(indexDir, { recursive: true });
+    execSync(`tar xzf "${tmpFile}" -C "${indexDir}"`, { timeout: 30000 });
+
+    // Fetch and save SHA for future freshness checks.
+    let sha: string | null = null;
+    if (storageUrl) {
+      sha = await fetchUrlSha(storageUrl, config);
+    } else {
+      sha = await fetchS3Sha(config);
+    }
+    if (sha) {
+      writeFileSync(resolve(indexDir, ".vectors-sha256"), sha + "\n");
+    }
+  } finally {
+    try {
+      execSync(`rm -f "${tmpFile}"`);
+    } catch {
+      // cleanup best-effort
+    }
+  }
 }
 
 // --- Embedding ---
@@ -432,26 +493,14 @@ export function registerCodeSearchTool(server: McpServer): void {
 
         // Find the database.
         let dbPath = findDatabase(cwd);
-        if (!dbPath) {
-          // Try pulling via script (blocking — first-time setup).
-          if (repoRoot) {
-            const pullScript = resolve(
-              repoRoot,
-              "scripts",
-              "pull-code-index-vectors.sh"
-            );
-            if (existsSync(pullScript)) {
-              try {
-                execSync(pullScript + " --quiet", {
-                  cwd: repoRoot,
-                  timeout: 60000,
-                  env: { ...process.env },
-                });
-                dbPath = findDatabase(cwd);
-              } catch {
-                // Pull failed
-              }
-            }
+        if (!dbPath && repoRoot) {
+          // No local database — try to download from configured storage.
+          // This blocks on first use but is needed to bootstrap.
+          try {
+            await initialPull(repoRoot, config);
+            dbPath = findDatabase(cwd);
+          } catch {
+            // Pull failed — fall through to error message
           }
         }
 
