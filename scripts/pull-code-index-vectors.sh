@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # Copyright (C) 2026 by Posit Software, PBC
 # Licensed under the MIT License. See LICENSE for details.
-# Pull the latest code-index vector database from S3.
+# Pull the latest code-index vector database.
 # Reads configuration from .code-index.json in the repository root.
+# Supports two storage providers:
+#   - HTTP URL (any hosting: GitHub Releases, GCS, Azure Blob, CDNs)
+#   - S3 (AWS, uses SDK credential chain)
 #
 # Usage:
 #   ./scripts/pull-code-index-vectors.sh          # pull if outdated
@@ -41,16 +44,13 @@ elif v is not None:
     echo "${value:-$default}"
 }
 
+STORAGE_URL=$(read_config "storage.url")
+AUTH_TOKEN_ENV=$(read_config "storage.auth_token_env")
 BUCKET=$(read_config "storage.s3_bucket")
 S3_PREFIX=$(read_config "storage.s3_prefix" "vectors")
 TARGET_ACCOUNT=$(read_config "aws.account")
 AWS_PROFILES=$(read_config "aws.profiles")
 export AWS_REGION=$(read_config "aws.region" "us-east-1")
-
-if [ -z "$BUCKET" ]; then
-    echo "Error: storage.s3_bucket not set in $CONFIG_FILE" >&2
-    exit 0
-fi
 
 FORCE=false
 QUIET=false
@@ -66,6 +66,40 @@ log() {
         echo "$@" >&2
     fi
 }
+
+# Determine storage provider.
+if [ -n "$STORAGE_URL" ]; then
+    PROVIDER="url"
+elif [ -n "$BUCKET" ]; then
+    PROVIDER="s3"
+else
+    log "No storage configured in $CONFIG_FILE (set storage.url or storage.s3_bucket)."
+    exit 0
+fi
+
+# --- HTTP URL provider ---
+
+url_get_sha() {
+    local sha_url="${STORAGE_URL}.sha256"
+    local curl_args=(-sfL)
+    if [ -n "$AUTH_TOKEN_ENV" ] && [ -n "${!AUTH_TOKEN_ENV:-}" ]; then
+        curl_args+=(-H "Authorization: Bearer ${!AUTH_TOKEN_ENV}")
+    fi
+    curl "${curl_args[@]}" "$sha_url" 2>/dev/null | awk '{print $1}' || echo ""
+}
+
+url_download() {
+    local curl_args=(-fL --progress-bar)
+    if [ "$QUIET" = true ]; then
+        curl_args=(-sfL)
+    fi
+    if [ -n "$AUTH_TOKEN_ENV" ] && [ -n "${!AUTH_TOKEN_ENV:-}" ]; then
+        curl_args+=(-H "Authorization: Bearer ${!AUTH_TOKEN_ENV}")
+    fi
+    curl "${curl_args[@]}" "$STORAGE_URL" -o "$1"
+}
+
+# --- S3 provider ---
 
 # Find a working AWS profile that can access the target account.
 find_working_profile() {
@@ -113,24 +147,44 @@ check_account() {
     [ "$account" = "$TARGET_ACCOUNT" ]
 }
 
-if ! find_working_profile; then
-    log "Warning: No AWS profile found with access to the configured account."
-    log "Check aws.profiles in $CONFIG_FILE and run 'aws sso login --profile <profile>'."
-    log "code_search will fall back to grep/read tools."
-    exit 0  # Don't fail — this is a best-effort operation
+s3_get_sha() {
+    aws s3 cp "s3://${BUCKET}/${S3_PREFIX}/latest.sha256" - 2>/dev/null | awk '{print $1}' || echo ""
+}
+
+s3_download() {
+    local quiet_flag=""
+    if [ "$QUIET" = true ]; then
+        quiet_flag="--quiet"
+    fi
+    aws s3 cp "s3://${BUCKET}/${S3_PREFIX}/latest.tar.gz" "$1" $quiet_flag
+}
+
+# --- Main logic ---
+
+# Set up credentials for S3 provider.
+if [ "$PROVIDER" = "s3" ]; then
+    if ! find_working_profile; then
+        log "Warning: No AWS profile found with access to the configured account."
+        log "Check aws.profiles in $CONFIG_FILE and run 'aws sso login --profile <profile>'."
+        log "code_search will fall back to grep/read tools."
+        exit 0  # Don't fail — this is a best-effort operation
+    fi
 fi
 
-# Get the remote SHA
+# Get the remote SHA.
 REMOTE_SHA=""
-if ! REMOTE_SHA=$(aws s3 cp "s3://${BUCKET}/${S3_PREFIX}/latest.sha256" - 2>/dev/null); then
-    REMOTE_SHA=""
+if [ "$PROVIDER" = "url" ]; then
+    REMOTE_SHA=$(url_get_sha)
+else
+    REMOTE_SHA=$(s3_get_sha)
 fi
+
 if [ -z "$REMOTE_SHA" ]; then
-    log "Warning: Could not fetch remote vector hash from S3. Skipping update."
+    log "Warning: Could not fetch remote vector hash. Skipping update."
     exit 0
 fi
 
-# Check if local database is current
+# Check if local database is current.
 if [ "$FORCE" = false ] && [ -f "$LOCAL_SHA_FILE" ] && [ -f "$DB_FILE" ]; then
     LOCAL_SHA=$(cat "$LOCAL_SHA_FILE" 2>/dev/null || echo "")
     if [ "$LOCAL_SHA" = "$REMOTE_SHA" ]; then
@@ -139,17 +193,21 @@ if [ "$FORCE" = false ] && [ -f "$LOCAL_SHA_FILE" ] && [ -f "$DB_FILE" ]; then
     fi
 fi
 
-log "Downloading vector database from S3..."
+log "Downloading vector database..."
 TMPFILE=$(mktemp)
 trap "rm -f $TMPFILE" EXIT
 
-aws s3 cp "s3://${BUCKET}/${S3_PREFIX}/latest.tar.gz" "$TMPFILE" --quiet
+if [ "$PROVIDER" = "url" ]; then
+    url_download "$TMPFILE"
+else
+    s3_download "$TMPFILE"
+fi
 
 # Extract to .code-index/ (includes code-index.db, embed_cache.json, docs/, cache.json)
 mkdir -p "$INDEX_DIR"
 tar xzf "$TMPFILE" -C "$INDEX_DIR"
 
-# Save the SHA for future freshness checks
+# Save the SHA for future freshness checks.
 echo "$REMOTE_SHA" > "$LOCAL_SHA_FILE"
 
 log "Code index database updated ($(du -sh "$DB_FILE" 2>/dev/null | awk '{print $1}'))."

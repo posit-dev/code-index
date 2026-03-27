@@ -5,7 +5,15 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { execSync } from "child_process";
 import { resolve } from "path";
-import { existsSync, readFileSync } from "fs";
+import {
+  existsSync,
+  readFileSync,
+  writeFileSync,
+  mkdirSync,
+  renameSync,
+  statSync,
+} from "fs";
+import { tmpdir } from "os";
 import Database from "better-sqlite3";
 import * as sqliteVec from "sqlite-vec";
 import {
@@ -33,14 +41,21 @@ interface CodeIndexConfig {
     base_url?: string;
     api_key_env?: string;
   };
+  storage?: {
+    url?: string;
+    auth_token_env?: string;
+    s3_bucket?: string;
+    s3_prefix?: string;
+  };
   aws?: {
     region?: string;
+    account?: string;
+    profiles?: string[];
   };
 }
 
-/**
- * Find the code-index.db by searching upward from cwd.
- */
+// --- Database discovery ---
+
 function findDatabase(cwd: string): string | null {
   let dir = cwd;
   while (dir !== "/") {
@@ -51,9 +66,6 @@ function findDatabase(cwd: string): string | null {
   return null;
 }
 
-/**
- * Find the repo root (directory containing .code-index.json).
- */
 function findRepoRoot(cwd: string): string | null {
   let dir = cwd;
   while (dir !== "/") {
@@ -63,9 +75,6 @@ function findRepoRoot(cwd: string): string | null {
   return null;
 }
 
-/**
- * Load config from .code-index.json.
- */
 function loadConfig(repoRoot: string): CodeIndexConfig {
   const configPath = resolve(repoRoot, ".code-index.json");
   if (!existsSync(configPath)) return {};
@@ -76,15 +85,175 @@ function loadConfig(repoRoot: string): CodeIndexConfig {
   }
 }
 
+// --- Auto-update ---
+
+// Track in-flight background downloads to avoid duplicates.
+let updateInProgress = false;
+
 /**
- * Embed a query using the OpenAI-compatible embeddings API.
- * Works with OpenAI, Ollama, Together AI, LM Studio, vLLM, etc.
+ * Check if the vector database is stale and trigger a background update.
+ * Never blocks — returns immediately. The updated DB is used on the next search.
  */
+function maybeUpdateInBackground(
+  repoRoot: string,
+  config: CodeIndexConfig
+): void {
+  if (updateInProgress) return;
+
+  const indexDir = resolve(repoRoot, ".code-index");
+  const shaFile = resolve(indexDir, ".vectors-sha256");
+
+  // Only check once per hour.
+  if (existsSync(shaFile)) {
+    try {
+      const stat = statSync(shaFile);
+      const ageMs = Date.now() - stat.mtimeMs;
+      if (ageMs < 3600_000) return; // Less than 1 hour old
+    } catch {
+      // Can't stat — proceed with check
+    }
+  }
+
+  const storageUrl = config.storage?.url;
+  const s3Bucket = config.storage?.s3_bucket;
+
+  if (!storageUrl && !s3Bucket) return; // No storage configured
+
+  updateInProgress = true;
+
+  (async () => {
+    try {
+      // Get remote SHA.
+      let remoteSha: string | null = null;
+      if (storageUrl) {
+        remoteSha = await fetchUrlSha(storageUrl, config);
+      } else if (s3Bucket) {
+        remoteSha = await fetchS3Sha(repoRoot);
+      }
+
+      if (!remoteSha) {
+        // Touch the SHA file to avoid re-checking for another hour.
+        touchFile(shaFile, indexDir);
+        return;
+      }
+
+      // Compare with local SHA.
+      const localSha = existsSync(shaFile)
+        ? readFileSync(shaFile, "utf-8").trim()
+        : "";
+
+      if (localSha === remoteSha) {
+        // Up to date — touch file to reset the check timer.
+        touchFile(shaFile, indexDir);
+        return;
+      }
+
+      // Download to temp file, then atomic swap.
+      const tmpFile = resolve(tmpdir(), `code-index-${Date.now()}.tar.gz`);
+      try {
+        if (storageUrl) {
+          await downloadUrl(storageUrl, tmpFile, config);
+        } else {
+          await downloadS3(tmpFile, repoRoot);
+        }
+
+        // Extract.
+        mkdirSync(indexDir, { recursive: true });
+        execSync(`tar xzf "${tmpFile}" -C "${indexDir}"`, { timeout: 30000 });
+
+        // Write the new SHA.
+        writeFileSync(shaFile, remoteSha + "\n");
+      } finally {
+        try {
+          execSync(`rm -f "${tmpFile}"`);
+        } catch {
+          // Cleanup best-effort
+        }
+      }
+    } catch {
+      // Background update failed silently — don't disrupt searches.
+    } finally {
+      updateInProgress = false;
+    }
+  })();
+}
+
+function touchFile(path: string, dir: string): void {
+  try {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path, existsSync(path) ? readFileSync(path) : "");
+  } catch {
+    // best-effort
+  }
+}
+
+async function fetchUrlSha(
+  storageUrl: string,
+  config: CodeIndexConfig
+): Promise<string | null> {
+  const shaUrl = storageUrl + ".sha256";
+  const headers: Record<string, string> = {};
+  const tokenEnv = config.storage?.auth_token_env;
+  if (tokenEnv && process.env[tokenEnv]) {
+    headers["Authorization"] = `Bearer ${process.env[tokenEnv]}`;
+  }
+  try {
+    const resp = await fetch(shaUrl, { headers });
+    if (!resp.ok) return null;
+    const text = await resp.text();
+    return text.trim().split(/\s/)[0] || null;
+  } catch {
+    return null;
+  }
+}
+
+async function downloadUrl(
+  storageUrl: string,
+  destPath: string,
+  config: CodeIndexConfig
+): Promise<void> {
+  const headers: Record<string, string> = {};
+  const tokenEnv = config.storage?.auth_token_env;
+  if (tokenEnv && process.env[tokenEnv]) {
+    headers["Authorization"] = `Bearer ${process.env[tokenEnv]}`;
+  }
+  const resp = await fetch(storageUrl, { headers });
+  if (!resp.ok) throw new Error(`Download failed: ${resp.status}`);
+  const buffer = Buffer.from(await resp.arrayBuffer());
+  writeFileSync(destPath, buffer);
+}
+
+async function fetchS3Sha(repoRoot: string): Promise<string | null> {
+  try {
+    const result = execSync(
+      resolve(repoRoot, "scripts", "pull-code-index-vectors.sh") +
+        " --quiet 2>/dev/null; cat .code-index/.vectors-sha256 2>/dev/null",
+      { cwd: repoRoot, timeout: 60000, encoding: "utf-8" }
+    );
+    return result.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+async function downloadS3(destPath: string, repoRoot: string): Promise<void> {
+  // For S3, delegate to the pull script which handles auth, profile detection, etc.
+  execSync(
+    resolve(repoRoot, "scripts", "pull-code-index-vectors.sh") +
+      " --force --quiet",
+    { cwd: repoRoot, timeout: 120000, env: { ...process.env } }
+  );
+}
+
+// --- Embedding ---
+
 async function embedQueryOpenAI(
   query: string,
   config: CodeIndexConfig
 ): Promise<number[]> {
-  const baseURL = (config.embeddings?.base_url || "https://api.openai.com/v1").replace(/\/+$/, "");
+  const baseURL = (
+    config.embeddings?.base_url || "https://api.openai.com/v1"
+  ).replace(/\/+$/, "");
   const model = config.embeddings?.model || "text-embedding-3-small";
   const apiKeyEnv = config.embeddings?.api_key_env || "OPENAI_API_KEY";
   const apiKey = process.env[apiKeyEnv] || "";
@@ -124,9 +293,6 @@ async function embedQueryOpenAI(
   return result.data[0].embedding;
 }
 
-/**
- * Embed a query using Cohere Embed v4 via AWS Bedrock.
- */
 async function embedQueryBedrock(
   query: string,
   config: CodeIndexConfig
@@ -164,9 +330,6 @@ async function embedQueryBedrock(
   return result.embeddings.float[0];
 }
 
-/**
- * Embed a query using the configured provider.
- */
 async function embedQuery(
   query: string,
   config: CodeIndexConfig
@@ -184,9 +347,8 @@ async function embedQuery(
   }
 }
 
-/**
- * Search the sqlite-vec database for similar vectors.
- */
+// --- Database search ---
+
 function searchDatabase(
   dbPath: string,
   queryEmbedding: number[],
@@ -250,6 +412,8 @@ function searchDatabase(
   }
 }
 
+// --- MCP tool registration ---
+
 export function registerCodeSearchTool(server: McpServer): void {
   server.tool(
     "code_search",
@@ -263,12 +427,13 @@ export function registerCodeSearchTool(server: McpServer): void {
 
       try {
         const cwd = process.cwd();
+        const repoRoot = findRepoRoot(cwd);
+        const config = repoRoot ? loadConfig(repoRoot) : {};
 
         // Find the database.
         let dbPath = findDatabase(cwd);
         if (!dbPath) {
-          // Try pulling from S3.
-          const repoRoot = findRepoRoot(cwd);
+          // Try pulling via script (blocking — first-time setup).
           if (repoRoot) {
             const pullScript = resolve(
               repoRoot,
@@ -310,9 +475,10 @@ export function registerCodeSearchTool(server: McpServer): void {
           };
         }
 
-        // Load config.
-        const repoRoot = findRepoRoot(cwd);
-        const config = repoRoot ? loadConfig(repoRoot) : {};
+        // Trigger background update check (non-blocking).
+        if (repoRoot) {
+          maybeUpdateInBackground(repoRoot, config);
+        }
 
         // Embed the query.
         const queryEmbedding = await embedQuery(parsed.query, config);

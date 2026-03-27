@@ -73,14 +73,13 @@ Requires `prepublishOnly` build step (already configured in package.json).
 
 ## Language Parsers
 
-### Improve R parser with auto-download of R runtime
+### ~~Improve R parser with auto-download of R runtime~~ (DEFERRED)
 
-When Rscript is not available on the system, automatically download a
-prebuilt R binary from `https://cdn.posit.co/r/` to `.code-index/r/`
-and use it for parsing. This ensures R parsing works out of the box
-without requiring R to be pre-installed.
-
-See: configuration via `r.executable` and `r.version` in `.code-index.json`.
+Auto-download is impractical — cdn.posit.co serves platform-specific
+installers (.pkg, .deb, .rpm), not portable binaries. Instead, the parser
+now shows a clear install hint when Rscript is not found, and the docs
+cover installation for each platform. The regex fallback works well for
+most R code.
 
 ### Add more languages
 

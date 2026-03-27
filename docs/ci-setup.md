@@ -97,41 +97,76 @@ jobs:
           aws s3 cp /tmp/code-index.sha256 "s3://${S3_BUCKET}/${S3_PREFIX}/latest.sha256" --quiet
 ```
 
-## AWS setup for CI
+## Storage options
 
-### 1. Create an S3 bucket
+The CI workflow uploads the index tarball to a hosting provider. Developers
+download it automatically via the pull script or MCP auto-update.
 
-```bash
-aws s3 mb s3://my-code-index --region us-east-1
+### Option A: GitHub Releases (simplest, no cloud needed)
+
+Add an upload step to your workflow:
+
+```yaml
+      - name: Upload to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tar czf /tmp/code-index.tar.gz -C .code-index \
+            code-index.db docs/ embed_cache.json cache.json index.json
+          shasum -a 256 /tmp/code-index.tar.gz | awk '{print $1}' > /tmp/code-index.tar.gz.sha256
+          gh release create code-index --title "Code Index" --notes "Auto-updated" 2>/dev/null || true
+          gh release upload code-index /tmp/code-index.tar.gz /tmp/code-index.tar.gz.sha256 --clobber
 ```
 
-### 2. Create an IAM role for GitHub Actions
-
-Create a role with OIDC trust for your GitHub repository and attach a policy
-with `bedrock:InvokeModel` and `s3:GetObject`/`s3:PutObject` permissions.
-See [AWS Setup](aws-setup.md) for the policy details.
-
-### 3. Add the secret
-
-In your GitHub repository settings, add `AWS_ROLE_ARN` as a repository secret
-with the ARN of the IAM role.
-
-## S3 bucket structure
-
-The workflow uploads a compressed tarball containing all index data:
-
+Configure in `.code-index.json`:
+```json
+{
+  "storage": {
+    "url": "https://github.com/OWNER/REPO/releases/download/code-index/code-index.tar.gz"
+  }
+}
 ```
-s3://my-code-index/vectors/
-├── latest.tar.gz     # All index data (db, docs, cache)
-└── latest.sha256     # Hash for freshness checking
+
+For private repos, set `"auth_token_env": "GITHUB_TOKEN"` and ensure
+developers have `GITHUB_TOKEN` set (the `gh` CLI sets this automatically).
+
+### Option B: S3 (AWS enterprise)
+
+```yaml
+      - name: Upload to S3
+        run: |
+          tar czf /tmp/code-index.tar.gz -C .code-index \
+            code-index.db docs/ embed_cache.json cache.json index.json
+          shasum -a 256 /tmp/code-index.tar.gz | awk '{print $1}' > /tmp/code-index.tar.gz.sha256
+          aws s3 cp /tmp/code-index.tar.gz "s3://${S3_BUCKET}/${S3_PREFIX}/latest.tar.gz" --quiet
+          aws s3 cp /tmp/code-index.tar.gz.sha256 "s3://${S3_BUCKET}/${S3_PREFIX}/latest.sha256" --quiet
+```
+
+Requires an S3 bucket and IAM role. See [AWS Setup](aws-setup.md).
+
+### Option C: Any HTTPS endpoint
+
+Upload however you like — GCS (`gcloud storage cp`), Azure Blob
+(`az storage blob upload`), Artifactory, a static file server, etc.
+As long as the tarball and `.sha256` file are accessible over HTTPS,
+the pull script handles the rest.
+
+```json
+{
+  "storage": {
+    "url": "https://your-host.example.com/path/to/code-index.tar.gz",
+    "auth_token_env": "MY_TOKEN"
+  }
+}
 ```
 
 ## Developer setup
 
 Once CI is running, developers just need:
 
-1. AWS credentials that can read from the S3 bucket
-2. The MCP server configured in `.mcp.json`
+1. The MCP server configured in `.mcp.json`
+2. For private storage: the auth token env var set (e.g., `GITHUB_TOKEN`)
+3. For S3: AWS credentials that can read from the bucket
 
 The `pull-code-index-vectors.sh` script handles downloading and caching.
 If the MCP tool can't find a local database, it runs the pull script

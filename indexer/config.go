@@ -73,9 +73,16 @@ type EmbeddingsConfig struct {
 	Model string `json:"model,omitempty"`
 }
 
-// StorageConfig defines where vectors are stored for distribution.
+// StorageConfig defines where the vector database is hosted for team distribution.
+// Auto-detect: if URL is set, use HTTP download. If S3Bucket is set, use AWS S3.
 type StorageConfig struct {
-	// S3Bucket is the S3 bucket name for vector storage.
+	// URL is an HTTPS endpoint serving the vector database tarball.
+	// Works with any hosting: GitHub Releases, GCS, Azure Blob, CDNs, etc.
+	URL string `json:"url,omitempty"`
+	// AuthTokenEnv is the env var name containing a bearer token for authenticated downloads.
+	// Optional — only needed for private endpoints. The token is sent as "Authorization: Bearer $TOKEN".
+	AuthTokenEnv string `json:"auth_token_env,omitempty"`
+	// S3Bucket is the S3 bucket name (AWS-specific, uses SDK credential chain).
 	S3Bucket string `json:"s3_bucket,omitempty"`
 	// S3Prefix is the key prefix within the bucket.
 	S3Prefix string `json:"s3_prefix,omitempty"`

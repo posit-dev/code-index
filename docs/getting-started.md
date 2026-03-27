@@ -14,7 +14,7 @@ This guide walks you through setting up code-index for your project.
 
 ### Optional
 
-- **R** — for parsing R source files (falls back to regex if unavailable)
+- **R** — for parsing R source files (`brew install r` on macOS, `apt-get install r-base` on Ubuntu; falls back to regex if unavailable)
 - **S3 bucket** — for distributing the vector database across a team
 - **libsqlite3-dev** — required on Linux for building from source
 

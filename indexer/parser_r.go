@@ -56,7 +56,8 @@ func NewRParserWithConfig(srcRoot string, excludes []string, rscriptBin, repoRoo
 			var err error
 			bin, err = exec.LookPath("Rscript")
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "warning: Rscript not found in PATH, using regex fallback for R parsing\n")
+				fmt.Fprintf(os.Stderr, "warning: Rscript not found in PATH, using regex fallback for R parsing.\n")
+				fmt.Fprintf(os.Stderr, "  For better R parsing, install R: https://cloud.r-project.org/ or `brew install r` (macOS)\n")
 				rscriptAvailable = false
 				return
 			}

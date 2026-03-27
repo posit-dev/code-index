@@ -211,7 +211,28 @@ The embedding model must be consistent between indexing and querying — you can
 
 **Type:** object (optional)
 
-Configuration for distributing the vector database via S3.
+Configuration for distributing the vector database to your team. Two
+providers are supported, auto-detected from which fields are set:
+
+**HTTP URL** (works with any hosting):
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `url` | string | no | HTTPS URL to the vector database tarball |
+| `auth_token_env` | string | no | Env var name containing a bearer token for authenticated downloads |
+
+The SHA URL is derived automatically as `{url}.sha256`.
+
+```json
+{
+  "storage": {
+    "url": "https://github.com/myorg/myrepo/releases/download/code-index/code-index.tar.gz",
+    "auth_token_env": "GITHUB_TOKEN"
+  }
+}
+```
+
+**S3** (AWS enterprise):
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
@@ -238,7 +259,26 @@ The `account` and `profiles` fields are used by `scripts/pull-code-index-vectors
 |-------|------|----------|-------------|
 | `executable` | string | no | Path to `Rscript` (auto-detected from PATH if empty) |
 
-If Rscript is not found, R files are parsed using a regex-based fallback that handles common patterns (function definitions, roxygen comments, S4/R6 classes).
+R parsing works in two modes:
+
+1. **Native mode** (recommended) — uses Rscript to parse R files with full
+   accuracy, including complex expressions, S4/R6 class detection, and
+   roxygen2 documentation. Requires R to be installed.
+
+2. **Regex fallback** — when Rscript is not available, uses regex patterns
+   to extract function definitions, roxygen comments, and common class
+   patterns. Works for most R code but may miss unusual constructs.
+
+To install R:
+- **macOS**: `brew install r` or download from [CRAN](https://cloud.r-project.org/)
+- **Ubuntu/Debian**: `sudo apt-get install r-base`
+- **Fedora/RHEL**: `sudo dnf install R`
+- **Windows**: download from [CRAN](https://cloud.r-project.org/)
+
+If R is installed in a non-standard location, set the `executable` field:
+```json
+{"r": {"executable": "/opt/R/4.4.0/bin/Rscript"}}
+```
 
 ## File layout
 
