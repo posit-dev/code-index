@@ -579,6 +579,7 @@ func fileDocPath(docsDir, filePath string) string {
 // pkgDocPath returns the file path for a package's doc.
 func pkgDocPath(docsDir, importPath string) string {
 	safe := strings.ReplaceAll(importPath, "/", "_")
+	safe = strings.ReplaceAll(safe, ".", "_")
 	return filepath.Join(docsDir, "pkg", strings.ToLower(safe)+".md")
 }
 
