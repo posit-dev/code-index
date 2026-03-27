@@ -101,9 +101,9 @@ func TestExtractFirstJSON(t *testing.T) {
 			want:  "",
 		},
 		{
-			name:  "unclosed brace",
+			name:  "unclosed brace repaired",
 			input: `{"key": "value"`,
-			want:  "",
+			want:  `{"key": "value"}`,
 		},
 	}
 

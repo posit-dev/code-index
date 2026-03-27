@@ -49,7 +49,7 @@ func runSearch(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 
 	// Create embedder for the query.
-	embedder, err := indexer.NewEmbedder(ctx, config.Embeddings.Provider, config.Embeddings.Model, config.AWS.Region)
+	embedder, err := indexer.NewEmbedder(ctx, config.Embeddings, config.AWS.Region)
 	if err != nil {
 		return fmt.Errorf("creating embedder: %w", err)
 	}
@@ -60,11 +60,12 @@ func runSearch(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("embedding query: %w", err)
 	}
 
-	// Open the vector store.
-	store, err := indexer.OpenVectorStore(out)
+	// Open the vector store (dimensions=0 reads stored value from DB).
+	store, err := indexer.OpenVectorStore(out, 0)
 	if err != nil {
 		return fmt.Errorf("opening vector store: %w", err)
 	}
+	defer store.Close() //nolint:errcheck
 
 	// Search.
 	results, err := store.Search(ctx, queryEmbedding, searchMaxResults)

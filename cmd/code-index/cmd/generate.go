@@ -22,7 +22,7 @@ var (
 func init() {
 	generateCmd.Flags().BoolVar(&dryRun, "dry-run", false, "Check what would be generated without making LLM calls")
 	generateCmd.Flags().IntVar(&maxFiles, "limit", 0, "Limit number of files to process (0 = unlimited)")
-	generateCmd.Flags().StringVar(&backend, "backend", "", `LLM backend override: "bedrock", "cli", or "" (use config)`)
+	generateCmd.Flags().StringVar(&backend, "backend", "", `LLM backend override: "bedrock", "openai", or "" (use config)`)
 	generateCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Verbose logging of LLM calls")
 	RootCmd.AddCommand(generateCmd)
 }

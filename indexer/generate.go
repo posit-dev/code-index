@@ -58,7 +58,7 @@ func NewGenerator(outputDir string, config *IndexConfig, dryRun bool, opts ...Ge
 		if provider == "" {
 			provider = config.LLM.Provider
 		}
-		backend, err := selectBackend(provider, g.verbose, config.AWS.Region)
+		backend, err := selectBackend(provider, config.AWS.Region, config.LLM.BaseURL, config.LLM.APIKeyEnv)
 		if err != nil {
 			return nil, err
 		}
@@ -70,25 +70,16 @@ func NewGenerator(outputDir string, config *IndexConfig, dryRun bool, opts ...Ge
 }
 
 // selectBackend chooses the LLM backend based on provider name.
-func selectBackend(provider string, verbose bool, awsRegion string) (LLMBackend, error) {
+func selectBackend(provider, awsRegion, baseURL, apiKeyEnv string) (LLMBackend, error) {
 	switch provider {
-	case "cli":
-		return NewCLIBackend(verbose)
+	case "openai":
+		return NewOpenAILLMBackend(baseURL, apiKeyEnv)
 	case "bedrock":
 		return NewBedrockLLMBackend(awsRegion)
 	case "":
-		// Auto-detect: prefer Bedrock, then CLI.
-		bedrock, err := NewBedrockLLMBackend(awsRegion)
-		if err == nil {
-			return bedrock, nil
-		}
-		cli, cliErr := NewCLIBackend(verbose)
-		if cliErr == nil {
-			return cli, nil
-		}
-		return nil, fmt.Errorf("no LLM backend available:\n  Bedrock: %v\n  Claude Code CLI: %v", err, cliErr)
+		return NewBedrockLLMBackend(awsRegion)
 	default:
-		return nil, fmt.Errorf("unknown backend %q (use \"bedrock\", \"cli\", or \"\" for auto-detect)", provider)
+		return nil, fmt.Errorf("unknown LLM provider %q (supported: \"bedrock\", \"openai\")", provider)
 	}
 }
 
@@ -131,33 +122,29 @@ func (g *Generator) Generate(parsed *ParseResult, diff *DiffResult, cache *Cache
 		}
 	}
 
-	// Phase 1: Generate function docs (Haiku) — parallel.
-	fileGroups := groupFunctionsByFile(diff.ChangedFunctions)
-	totalFileGroups := len(fileGroups)
-	if g.maxFiles > 0 && totalFileGroups > g.maxFiles {
-		totalFileGroups = g.maxFiles
-	}
-	fmt.Fprintf(os.Stderr, "\nPhase 1/3: Function docs (Haiku) — %d file batches, %d workers\n", totalFileGroups, numWorkers)
-
+	// Phase 1: Generate function docs — one LLM call per function, parallel.
 	type funcWorkItem struct {
-		filePath string
+		key      string
+		fn       *FunctionInfo
 		fileInfo *FileInfo
-		funcs    []*FunctionInfo
 	}
 
-	// Collect work items.
 	var funcWork []funcWorkItem
-	for filePath, funcs := range fileGroups {
-		if g.maxFiles > 0 && len(funcWork) >= g.maxFiles {
-			stats.FunctionsSkipped += len(funcs)
-			continue
-		}
-		fileInfo := parsed.Files[filePath]
+	for key, fn := range diff.ChangedFunctions {
+		fileInfo := parsed.Files[fn.File]
 		if fileInfo == nil {
 			continue
 		}
-		funcWork = append(funcWork, funcWorkItem{filePath, fileInfo, funcs})
+		funcWork = append(funcWork, funcWorkItem{key, fn, fileInfo})
 	}
+
+	totalFuncs := len(funcWork)
+	if g.maxFiles > 0 && totalFuncs > g.maxFiles {
+		stats.FunctionsSkipped = totalFuncs - g.maxFiles
+		funcWork = funcWork[:g.maxFiles]
+		totalFuncs = g.maxFiles
+	}
+	fmt.Fprintf(os.Stderr, "\nPhase 1/3: Function docs — %d functions, %d workers\n", totalFuncs, numWorkers)
 
 	if !g.dryRun {
 		var wg sync.WaitGroup
@@ -170,36 +157,24 @@ func (g *Generator) Generate(parsed *ParseResult, diff *DiffResult, cache *Cache
 				defer wg.Done()
 				for idx := range workCh {
 					item := funcWork[idx]
-					chunks := chunkFunctions(item.funcs, 30)
-					for _, chunk := range chunks {
-						docs, err := g.generateFunctionDocs(item.fileInfo, chunk)
-						if err != nil {
-							errCh <- fmt.Errorf("generating function docs for %s: %w", item.filePath, err)
-							return
-						}
-						mu.Lock()
-						for key, doc := range docs {
-							fn := diff.ChangedFunctions[key]
-							if fn == nil {
-								mu.Unlock()
-								// skip silently
-								mu.Lock()
-								continue
-							}
-							if wErr := writeDoc(funcDocPath(docsDir, key), doc); wErr != nil {
-								fmt.Fprintf(os.Stderr, "\n  warning: failed to write doc for %s: %v", key, wErr)
-							}
-							cache.Functions[key] = &FunctionCache{
-								ASTHash:       fn.ASTHash,
-								SigHash:       fn.SigHash,
-								DocHash:       hashString(doc),
-								LastGenerated: time.Now(),
-							}
-							stats.FunctionsGenerated++
-						}
-						maybeSaveCache()
-						mu.Unlock()
+					doc, err := g.generateFunctionDoc(item.fn, item.fileInfo)
+					if err != nil {
+						errCh <- fmt.Errorf("generating doc for %s: %w", item.key, err)
+						return
 					}
+					mu.Lock()
+					if wErr := writeDoc(funcDocPath(docsDir, item.key), doc); wErr != nil {
+						fmt.Fprintf(os.Stderr, "\n  warning: failed to write doc for %s: %v", item.key, wErr)
+					}
+					cache.Functions[item.key] = &FunctionCache{
+						ASTHash:       item.fn.ASTHash,
+						SigHash:       item.fn.SigHash,
+						DocHash:       hashString(doc),
+						LastGenerated: time.Now(),
+					}
+					stats.FunctionsGenerated++
+					maybeSaveCache()
+					mu.Unlock()
 				}
 			}()
 		}
@@ -215,7 +190,7 @@ func (g *Generator) Generate(parsed *ParseResult, diff *DiffResult, cache *Cache
 					mu.Lock()
 					n := stats.FunctionsGenerated
 					mu.Unlock()
-					fmt.Fprintf(os.Stderr, "  [%d functions generated...]\n", n)
+					fmt.Fprintf(os.Stderr, "  [%d/%d functions generated...]\n", n, totalFuncs)
 				case <-done:
 					return
 				}
@@ -240,9 +215,7 @@ func (g *Generator) Generate(parsed *ParseResult, diff *DiffResult, cache *Cache
 		}
 		fmt.Fprintf(os.Stderr, "  Done: %d function summaries generated\n", stats.FunctionsGenerated)
 	} else {
-		for _, item := range funcWork {
-			stats.FunctionsGenerated += len(item.funcs)
-		}
+		stats.FunctionsGenerated = totalFuncs
 		fmt.Fprintf(os.Stderr, "  Skipped (dry-run): %d functions\n", stats.FunctionsGenerated)
 	}
 
@@ -478,71 +451,29 @@ func detectLanguage(path string) string {
 	}
 }
 
-// generateFunctionDocs generates summaries for a batch of functions from the same file.
-func (g *Generator) generateFunctionDocs(fileInfo *FileInfo, funcs []*FunctionInfo) (map[string]string, error) {
+// generateFunctionDoc generates a plain text summary for a single function.
+func (g *Generator) generateFunctionDoc(fn *FunctionInfo, fileInfo *FileInfo) (string, error) {
 	lang := detectLanguage(fileInfo.Path)
 
 	var prompt strings.Builder
-	fmt.Fprintf(&prompt, "You are a %s code documentation assistant. Generate a concise one-line summary for each function below. ", lang)
-	prompt.WriteString("The summary should describe what the function does, its key behavior, and when you'd use it. ")
+	fmt.Fprintf(&prompt, "You are a %s code documentation assistant. ", lang)
+	prompt.WriteString("Generate a concise 1-2 sentence summary of the function below. ")
+	prompt.WriteString("Describe what it does, its key behavior, and when you'd use it. ")
 	prompt.WriteString("Be specific — mention parameter types, return values, and edge cases when relevant. ")
 	prompt.WriteString("Do NOT start with the function name. ")
-	prompt.WriteString("Respond in JSON format: {\"summaries\": {\"key\": \"summary\", ...}}\n\n")
-	fmt.Fprintf(&prompt, "File: %s (package %s)\n\n", fileInfo.Path, fileInfo.Package)
-
-	for _, fn := range funcs {
-		key := FunctionCacheKey(fn.File, fn.Name, fn.Receiver)
-		fmt.Fprintf(&prompt, "Key: %s\n", key)
-		fmt.Fprintf(&prompt, "Signature: %s\n", fn.Signature)
-		if fn.Doc != "" {
-			fmt.Fprintf(&prompt, "Doc: %s\n", fn.Doc)
-		}
-		prompt.WriteString("\n")
-	}
-
-	// Build a lookup from various short forms to full keys so we can remap
-	// LLM responses that use abbreviated keys.
-	shortToFull := make(map[string]string)
-	for _, fn := range funcs {
-		key := FunctionCacheKey(fn.File, fn.Name, fn.Receiver)
-		// "FuncName"
-		shortToFull[fn.Name] = key
-		if fn.Receiver != "" {
-			// "*Type.FuncName" or "Type.FuncName"
-			shortToFull[fn.Receiver+"."+fn.Name] = key
-			// "(*Type).FuncName"
-			recv := fn.Receiver
-			if strings.HasPrefix(recv, "*") {
-				shortToFull["("+recv+")."+fn.Name] = key
-			}
-		}
+	prompt.WriteString("Respond with ONLY the summary text, no formatting.\n\n")
+	fmt.Fprintf(&prompt, "File: %s (package %s)\n", fileInfo.Path, fileInfo.Package)
+	fmt.Fprintf(&prompt, "Signature: %s\n", fn.Signature)
+	if fn.Doc != "" {
+		fmt.Fprintf(&prompt, "Doc: %s\n", fn.Doc)
 	}
 
 	resp, err := g.backend.Call(g.config.FunctionModel(), prompt.String())
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 
-	// Parse the JSON response. The LLM may wrap it in markdown code fences
-	// or include extra text before/after the JSON.
-	resp = stripCodeFences(resp)
-
-	summaries, err := parseSummariesResponse(resp)
-	if err != nil {
-		return nil, fmt.Errorf("parsing LLM response: %w (response: %s)", err, resp)
-	}
-
-	// Remap abbreviated keys to full cache keys.
-	remapped := make(map[string]string, len(summaries))
-	for key, summary := range summaries {
-		if fullKey, ok := shortToFull[key]; ok {
-			remapped[fullKey] = summary
-		} else {
-			remapped[key] = summary
-		}
-	}
-
-	return remapped, nil
+	return strings.TrimSpace(resp), nil
 }
 
 // generateFileDoc generates a summary for a file using its function summaries.
@@ -628,31 +559,6 @@ func (g *Generator) generatePackageDoc(pkgInfo *PackageInfo, parsed *ParseResult
 	}
 
 	return g.backend.Call(g.config.SummaryModel(), prompt.String())
-}
-
-// groupFunctionsByFile groups changed functions by their file path.
-func groupFunctionsByFile(funcs map[string]*FunctionInfo) map[string][]*FunctionInfo {
-	groups := make(map[string][]*FunctionInfo)
-	for _, fn := range funcs {
-		groups[fn.File] = append(groups[fn.File], fn)
-	}
-	return groups
-}
-
-// chunkFunctions splits a slice of functions into chunks of at most size n.
-func chunkFunctions(funcs []*FunctionInfo, n int) [][]*FunctionInfo {
-	if len(funcs) <= n {
-		return [][]*FunctionInfo{funcs}
-	}
-	var chunks [][]*FunctionInfo
-	for i := 0; i < len(funcs); i += n {
-		end := i + n
-		if end > len(funcs) {
-			end = len(funcs)
-		}
-		chunks = append(chunks, funcs[i:end])
-	}
-	return chunks
 }
 
 // funcDocPath returns the file path for a function's doc.
@@ -769,6 +675,7 @@ func stripCodeFences(s string) string {
 
 // extractFirstJSON extracts the first complete JSON object from a string.
 // Handles cases where the LLM outputs multiple JSON blocks or extra text.
+// If the JSON is truncated (unbalanced braces), attempts repair by closing open braces.
 func extractFirstJSON(s string) string {
 	start := strings.Index(s, "{")
 	if start < 0 {
@@ -804,5 +711,29 @@ func extractFirstJSON(s string) string {
 			}
 		}
 	}
+
+	// Truncated JSON — try to repair by closing open braces.
+	// This handles local models that sometimes cut off the response.
+	if depth > 0 {
+		repaired := s[start:]
+		// Close any unclosed string.
+		if inString {
+			repaired += `"`
+		}
+		// Strip trailing commas, whitespace, and partial key-value pairs
+		// that local models sometimes leave behind.
+		repaired = strings.TrimRight(repaired, " \t\n\r")
+		repaired = strings.TrimRight(repaired, ",")
+		// Close open braces.
+		for range depth {
+			repaired += "}"
+		}
+		// Validate the repair produced valid JSON.
+		var test json.RawMessage
+		if json.Unmarshal([]byte(repaired), &test) == nil {
+			return repaired
+		}
+	}
+
 	return ""
 }

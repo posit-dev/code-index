@@ -2,12 +2,9 @@
 package indexer
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -25,59 +22,55 @@ type LLMBackend interface {
 	Name() string
 }
 
-// CLIBackend uses the Claude Code CLI (`claude -p`) for LLM calls.
-// This uses the developer's existing Claude Code authentication.
-type CLIBackend struct {
-	claudePath string
-	verbose    bool
+// OpenAILLMBackend uses any OpenAI-compatible API for LLM calls.
+// Works with OpenAI, Ollama, Together AI, Groq, Fireworks, LM Studio, vLLM, etc.
+type OpenAILLMBackend struct {
+	client *openaiClient
 }
 
-// NewCLIBackend creates a CLI backend, returning an error if claude is not found.
-func NewCLIBackend(verbose bool) (*CLIBackend, error) {
-	path, err := exec.LookPath("claude")
+// NewOpenAILLMBackend creates an LLM backend using the OpenAI chat/completions API.
+func NewOpenAILLMBackend(baseURL, apiKeyEnv string) (*OpenAILLMBackend, error) {
+	client, err := newOpenAIClient(baseURL, apiKeyEnv)
 	if err != nil {
-		return nil, fmt.Errorf("claude CLI not found in PATH: %w", err)
+		return nil, err
 	}
-	return &CLIBackend{claudePath: path, verbose: verbose}, nil
+	return &OpenAILLMBackend{client: client}, nil
 }
 
-func (b *CLIBackend) Name() string { return "Claude Code CLI" }
+func (b *OpenAILLMBackend) Name() string {
+	return fmt.Sprintf("OpenAI (%s)", b.client.baseURL)
+}
 
-func (b *CLIBackend) Call(model, prompt string) (string, error) {
-	args := []string{
-		"-p",
-		"--model", model,
-		"--no-session-persistence",
-		"--system-prompt", "You are a code documentation assistant. You receive function signatures and doc comments as input. Generate summaries based ONLY on the information provided in the prompt. Never ask for files, tools, or additional context. Always respond directly with the requested output.",
+func (b *OpenAILLMBackend) Call(model, prompt string) (string, error) {
+	reqBody := map[string]interface{}{
+		"model": model,
+		"messages": []map[string]string{
+			{"role": "user", "content": prompt},
+		},
+		"max_tokens": 16384,
 	}
 
-	if b.verbose {
-		fmt.Fprintf(os.Stderr, "[claude-cli] Running: %s %s\n", b.claudePath, strings.Join(args, " "))
-		fmt.Fprintf(os.Stderr, "[claude-cli] Prompt length: %d bytes\n", len(prompt))
+	respBody, err := b.client.post(context.Background(), "/chat/completions", reqBody)
+	if err != nil {
+		return "", fmt.Errorf("OpenAI chat/completions: %w", err)
 	}
 
-	cmd := exec.Command(b.claudePath, args...)
-	cmd.Stdin = strings.NewReader(prompt)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		stderrStr := strings.TrimSpace(stderr.String())
-		stdoutStr := strings.TrimSpace(stdout.String())
-		if strings.Contains(stderrStr, "Not logged in") || strings.Contains(stderrStr, "/login") ||
-			strings.Contains(stdoutStr, "Not logged in") || strings.Contains(stdoutStr, "/login") {
-			return "", fmt.Errorf("claude CLI: not logged in. Run 'claude /login' first")
-		}
-		return "", fmt.Errorf("claude CLI (%s) error: %w\nstdout: %s\nstderr: %s", b.claudePath, err, stdoutStr, stderrStr)
+	var result struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return "", fmt.Errorf("parsing response: %w", err)
 	}
 
-	result := strings.TrimSpace(stdout.String())
-	if b.verbose {
-		fmt.Fprintf(os.Stderr, "[claude-cli] Response length: %d bytes\n", len(result))
+	if len(result.Choices) == 0 {
+		return "", fmt.Errorf("empty response (no choices)")
 	}
 
-	return result, nil
+	return strings.TrimSpace(result.Choices[0].Message.Content), nil
 }
 
 // BedrockLLMBackend uses Claude models on AWS Bedrock for LLM calls.

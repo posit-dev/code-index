@@ -6,13 +6,17 @@ This guide walks you through setting up code-index for your project.
 
 - **Go 1.21+** — for building the CLI tool
 - **Node.js 20+** — for the MCP search server
-- **AWS account** with Bedrock access — for LLM summaries and embeddings
+- One of:
+  - **AWS account** with Bedrock access — best quality (Cohere embeddings + Claude summaries)
+  - **OpenAI API key** — good quality, easy setup
+  - **Ollama** — free, fully local, no cloud account needed
 - **Claude Code** (optional) — the MCP tool integrates with Claude Code, but the CLI works standalone
 
 ### Optional
 
 - **R** — for parsing R source files (falls back to regex if unavailable)
 - **S3 bucket** — for distributing the vector database across a team
+- **libsqlite3-dev** — required on Linux for building from source
 
 ## Installation
 
@@ -53,7 +57,60 @@ Create `.code-index.json` in your repository root. Start with the example:
 cp .code-index.example.json .code-index.json
 ```
 
-Edit it to match your project structure. At minimum, you need:
+Edit it to match your project structure. Choose one of the setups below.
+
+### Ollama (local, free)
+
+Install [Ollama](https://ollama.com), then pull the models:
+
+```bash
+ollama pull llama3.2
+ollama pull nomic-embed-text
+```
+
+```json
+{
+  "sources": [
+    {"path": "src", "language": "go"}
+  ],
+  "llm": {
+    "provider": "openai",
+    "base_url": "http://localhost:11434/v1",
+    "function_model": "llama3.2",
+    "summary_model": "llama3.2"
+  },
+  "embeddings": {
+    "provider": "openai",
+    "base_url": "http://localhost:11434/v1",
+    "model": "nomic-embed-text"
+  }
+}
+```
+
+### OpenAI
+
+Set your API key: `export OPENAI_API_KEY=sk-...`
+
+```json
+{
+  "sources": [
+    {"path": "src", "language": "go"}
+  ],
+  "llm": {
+    "provider": "openai",
+    "function_model": "gpt-4o-mini",
+    "summary_model": "gpt-4o"
+  },
+  "embeddings": {
+    "provider": "openai",
+    "model": "text-embedding-3-small"
+  }
+}
+```
+
+### AWS Bedrock (best quality)
+
+Requires AWS credentials with Bedrock access. See [AWS Setup](aws-setup.md).
 
 ```json
 {

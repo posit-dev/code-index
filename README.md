@@ -45,17 +45,20 @@ Create `.code-index.json` in your repository root (see [Configuration](docs/conf
     {"path": "frontend", "language": "typescript"}
   ],
   "llm": {
-    "provider": "bedrock",
-    "function_model": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
-    "summary_model": "us.anthropic.claude-sonnet-4-6"
+    "provider": "openai",
+    "base_url": "http://localhost:11434/v1",
+    "function_model": "llama3.2",
+    "summary_model": "llama3.2"
   },
   "embeddings": {
-    "provider": "bedrock",
-    "model": "cohere.embed-v4:0"
-  },
-  "aws": {"region": "us-east-1"}
+    "provider": "openai",
+    "base_url": "http://localhost:11434/v1",
+    "model": "nomic-embed-text"
+  }
 }
 ```
+
+This example uses [Ollama](https://ollama.com) for fully local operation. You can also use [OpenAI](docs/getting-started.md#openai), [AWS Bedrock](docs/getting-started.md#aws-bedrock-best-quality), or any OpenAI-compatible API.
 
 ### 3. Build the index
 

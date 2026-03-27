@@ -49,8 +49,12 @@ type SourceConfig struct {
 
 // LLMConfig defines the LLM provider and model settings for doc generation.
 type LLMConfig struct {
-	// Provider: "bedrock", "cli", "api". Default: "bedrock".
+	// Provider: "bedrock" or "openai". Default: "bedrock".
 	Provider string `json:"provider,omitempty"`
+	// BaseURL is the API base URL (openai provider only). Default: "https://api.openai.com/v1".
+	BaseURL string `json:"base_url,omitempty"`
+	// APIKeyEnv is the env var name containing the API key (openai provider only). Default: "OPENAI_API_KEY".
+	APIKeyEnv string `json:"api_key_env,omitempty"`
 	// FunctionModel is the model for function-level summaries (high volume, fast).
 	FunctionModel string `json:"function_model,omitempty"`
 	// SummaryModel is the model for file and package summaries (higher quality).
@@ -59,8 +63,12 @@ type LLMConfig struct {
 
 // EmbeddingsConfig defines the embedding provider and model.
 type EmbeddingsConfig struct {
-	// Provider: "bedrock", "ollama". Default: "bedrock".
+	// Provider: "bedrock" or "openai". Default: "bedrock".
 	Provider string `json:"provider,omitempty"`
+	// BaseURL is the API base URL (openai provider only). Default: "https://api.openai.com/v1".
+	BaseURL string `json:"base_url,omitempty"`
+	// APIKeyEnv is the env var name containing the API key (openai provider only). Default: "OPENAI_API_KEY".
+	APIKeyEnv string `json:"api_key_env,omitempty"`
 	// Model is the embedding model ID.
 	Model string `json:"model,omitempty"`
 }

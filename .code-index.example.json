@@ -23,15 +23,44 @@
       "exclude": ["**/_site/**"]
     }
   ],
+
+  "_comment_llm": "Choose ONE of the llm blocks below and delete the others.",
+
+  "llm_ollama_example": {
+    "provider": "openai",
+    "base_url": "http://localhost:11434/v1",
+    "function_model": "llama3.2",
+    "summary_model": "llama3.2"
+  },
+  "llm_openai_example": {
+    "provider": "openai",
+    "api_key_env": "OPENAI_API_KEY",
+    "function_model": "gpt-4o-mini",
+    "summary_model": "gpt-4o"
+  },
   "llm": {
     "provider": "bedrock",
     "function_model": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
     "summary_model": "us.anthropic.claude-sonnet-4-6"
   },
+
+  "_comment_embeddings": "Choose ONE of the embeddings blocks below and delete the others.",
+
+  "embeddings_ollama_example": {
+    "provider": "openai",
+    "base_url": "http://localhost:11434/v1",
+    "model": "nomic-embed-text"
+  },
+  "embeddings_openai_example": {
+    "provider": "openai",
+    "api_key_env": "OPENAI_API_KEY",
+    "model": "text-embedding-3-small"
+  },
   "embeddings": {
     "provider": "bedrock",
     "model": "cohere.embed-v4:0"
   },
+
   "storage": {
     "s3_bucket": "my-code-index",
     "s3_prefix": "vectors"

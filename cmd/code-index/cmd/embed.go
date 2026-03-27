@@ -62,17 +62,11 @@ func runEmbed(cmd *cobra.Command, args []string) error {
 
 	// Create the embedder.
 	ctx := context.Background()
-	embedder, err := indexer.NewEmbedder(ctx, config.Embeddings.Provider, config.Embeddings.Model, config.AWS.Region)
+	embedder, err := indexer.NewEmbedder(ctx, config.Embeddings, config.AWS.Region)
 	if err != nil {
 		return fmt.Errorf("creating embedder: %w", err)
 	}
 	fmt.Fprintf(os.Stderr, "Using embedder: %s\n", embedder.Name())
-
-	// Open the vector store.
-	store, err := indexer.OpenVectorStore(out)
-	if err != nil {
-		return fmt.Errorf("opening vector store: %w", err)
-	}
 
 	// Load the embed cache for incremental updates.
 	embedCache, err := indexer.LoadEmbedCache(out)
@@ -81,15 +75,8 @@ func runEmbed(cmd *cobra.Command, args []string) error {
 	}
 
 	if resetVectors {
-		fmt.Fprintf(os.Stderr, "Resetting vector database and cache...\n")
-		if err := store.Reset(ctx); err != nil {
-			return fmt.Errorf("resetting vector store: %w", err)
-		}
 		embedCache = indexer.NewEmbedCache()
 	}
-
-	existingCount := store.Count()
-	fmt.Fprintf(os.Stderr, "Existing vectors: %d\n", existingCount)
 
 	// Build the list of items to embed.
 	type embedItem struct {
@@ -217,6 +204,53 @@ func runEmbed(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
+	// Detect embedding dimensions from the first item.
+	probeText := needsEmbed[0].text
+	probeEmb, err := embedder.EmbedDocument(ctx, probeText)
+	if err != nil {
+		return fmt.Errorf("detecting embedding dimensions: %w", err)
+	}
+	dims := len(probeEmb)
+	fmt.Fprintf(os.Stderr, "Embedding dimensions: %d\n", dims)
+
+	// Open the vector store with detected dimensions.
+	store, err := indexer.OpenVectorStore(out, dims)
+	if err != nil {
+		return fmt.Errorf("opening vector store: %w", err)
+	}
+	defer store.Close() //nolint:errcheck
+
+	if resetVectors {
+		fmt.Fprintf(os.Stderr, "Resetting vector database...\n")
+		if err := store.Reset(ctx); err != nil {
+			return fmt.Errorf("resetting vector store: %w", err)
+		}
+	}
+
+	existingCount := store.Count()
+	fmt.Fprintf(os.Stderr, "Existing vectors: %d\n", existingCount)
+
+	// Store the probe embedding (first item) so we don't re-embed it.
+	firstItem := needsEmbed[0]
+	if err := store.AddDocument(ctx, firstItem.id, firstItem.text, probeEmb, firstItem.meta); err != nil {
+		return fmt.Errorf("storing probe item %s: %w", firstItem.id, err)
+	}
+	embedCache.Set(firstItem.id, firstItem.contentHash)
+
+	// Remove the first item from the processing list.
+	needsEmbed = needsEmbed[1:]
+	total--
+
+	if total == 0 {
+		// The probe was the only item. Save cache and exit.
+		if err := embedCache.Save(out); err != nil {
+			return fmt.Errorf("saving embed cache: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "\nDone: 1 embedded, %d skipped\n", skipped)
+		fmt.Fprintf(os.Stderr, "Total vectors in database: %d\n", store.Count())
+		return nil
+	}
+
 	// Process items with parallel workers.
 	numWorkers := runtime.NumCPU()
 	if numWorkers < 4 {
@@ -271,7 +305,8 @@ func runEmbed(cmd *cobra.Command, args []string) error {
 	}()
 
 	// Collect results with progress reporting.
-	embedded := 0
+	// Start at 1 because we already embedded the probe item.
+	embedded := 1
 	errors := 0
 	var failedItems []embedItem
 	startTime := time.Now()

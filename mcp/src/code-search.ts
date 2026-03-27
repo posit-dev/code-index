@@ -30,6 +30,8 @@ interface CodeIndexConfig {
   embeddings?: {
     provider?: string;
     model?: string;
+    base_url?: string;
+    api_key_env?: string;
   };
   aws?: {
     region?: string;
@@ -75,9 +77,57 @@ function loadConfig(repoRoot: string): CodeIndexConfig {
 }
 
 /**
- * Embed a query string using Cohere Embed v4 via Bedrock.
+ * Embed a query using the OpenAI-compatible embeddings API.
+ * Works with OpenAI, Ollama, Together AI, LM Studio, vLLM, etc.
  */
-async function embedQuery(
+async function embedQueryOpenAI(
+  query: string,
+  config: CodeIndexConfig
+): Promise<number[]> {
+  const baseURL = (config.embeddings?.base_url || "https://api.openai.com/v1").replace(/\/+$/, "");
+  const model = config.embeddings?.model || "text-embedding-3-small";
+  const apiKeyEnv = config.embeddings?.api_key_env || "OPENAI_API_KEY";
+  const apiKey = process.env[apiKeyEnv] || "";
+
+  const url = `${baseURL}/embeddings`;
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (apiKey) {
+    headers["Authorization"] = `Bearer ${apiKey}`;
+  }
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ model, input: query }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    if (response.status === 404 && body.toLowerCase().includes("not found")) {
+      throw new Error(
+        `Model '${model}' not found. Run \`ollama pull ${model}\` to download it.`
+      );
+    }
+    throw new Error(`Embedding API error ${response.status}: ${body}`);
+  }
+
+  const result = (await response.json()) as {
+    data: Array<{ embedding: number[] }>;
+  };
+
+  if (!result.data?.[0]?.embedding) {
+    throw new Error("Empty embedding response");
+  }
+
+  return result.data[0].embedding;
+}
+
+/**
+ * Embed a query using Cohere Embed v4 via AWS Bedrock.
+ */
+async function embedQueryBedrock(
   query: string,
   config: CodeIndexConfig
 ): Promise<number[]> {
@@ -112,6 +162,26 @@ async function embedQuery(
   }
 
   return result.embeddings.float[0];
+}
+
+/**
+ * Embed a query using the configured provider.
+ */
+async function embedQuery(
+  query: string,
+  config: CodeIndexConfig
+): Promise<number[]> {
+  const provider = config.embeddings?.provider || "bedrock";
+  switch (provider) {
+    case "openai":
+      return embedQueryOpenAI(query, config);
+    case "bedrock":
+      return embedQueryBedrock(query, config);
+    default:
+      throw new Error(
+        `Unknown embedding provider "${provider}" (supported: "bedrock", "openai")`
+      );
+  }
 }
 
 /**
@@ -186,7 +256,7 @@ export function registerCodeSearchTool(server: McpServer): void {
     "Search the codebase using semantic vector search. " +
       "Use this to find existing utilities before writing new ones, understand how " +
       "patterns are implemented across the codebase, or navigate the architecture. " +
-      "Requires AWS credentials for query embedding and the vector database to be built.",
+      "Requires the vector database to be built and an embedding provider configured.",
     CodeSearchArgsSchema.shape,
     async (args) => {
       const parsed = CodeSearchArgsSchema.parse(args);
@@ -296,8 +366,14 @@ export function registerCodeSearchTool(server: McpServer): void {
           message.includes("security token")
         ) {
           hint =
-            " Hint: code_search requires AWS credentials for Bedrock. " +
-            "Run 'aws sso login' and ensure AWS_PROFILE is set.";
+            " Hint: If using Bedrock, run 'aws sso login' and ensure AWS_PROFILE is set." +
+            " If using OpenAI, ensure your API key env var is set.";
+        } else if (
+          message.includes("ECONNREFUSED") ||
+          message.includes("fetch failed")
+        ) {
+          hint =
+            " Hint: If using Ollama, ensure it is running (`ollama serve`).";
         }
 
         return {

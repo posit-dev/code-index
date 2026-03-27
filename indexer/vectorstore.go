@@ -24,12 +24,16 @@ func init() {
 
 // VectorStore manages the persistent vector database for code search.
 type VectorStore struct {
-	db     *sql.DB
-	dbPath string
+	db         *sql.DB
+	dbPath     string
+	dimensions int
 }
 
 // OpenVectorStore opens or creates the vector database at the given path.
-func OpenVectorStore(outputDir string) (*VectorStore, error) {
+// dimensions is the embedding vector size (e.g., 1536 for Cohere, 768 for nomic-embed-text).
+// If dimensions is 0 and the database already exists, the stored dimension is used.
+// If dimensions is non-zero and differs from the stored value, an error is returned.
+func OpenVectorStore(outputDir string, dimensions int) (*VectorStore, error) {
 	dbPath := filepath.Join(outputDir, "code-index.db")
 
 	db, err := sql.Open("sqlite3", dbPath)
@@ -37,18 +41,63 @@ func OpenVectorStore(outputDir string) (*VectorStore, error) {
 		return nil, fmt.Errorf("opening vector database: %w", err)
 	}
 
-	if err := initSchema(db); err != nil {
+	// Create the metadata table first (always safe).
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS metadata (
+		key TEXT PRIMARY KEY,
+		value TEXT NOT NULL
+	)`); err != nil {
+		_ = db.Close() //nolint:errcheck
+		return nil, fmt.Errorf("creating metadata table: %w", err)
+	}
+
+	// Check for stored dimensions.
+	storedDims := 0
+	var storedStr string
+	err = db.QueryRow("SELECT value FROM metadata WHERE key = 'embedding_dimensions'").Scan(&storedStr)
+	if err == nil {
+		storedDims, _ = strconv.Atoi(storedStr)
+	}
+
+	if dimensions == 0 {
+		dimensions = storedDims
+	}
+	if dimensions == 0 {
+		_ = db.Close() //nolint:errcheck
+		return nil, fmt.Errorf("embedding dimensions unknown — run 'code-index embed' to build the database")
+	}
+
+	// Validate dimension consistency.
+	if storedDims > 0 && dimensions != storedDims {
+		_ = db.Close() //nolint:errcheck
+		return nil, fmt.Errorf("embedding dimensions changed (was %d, now %d) — run with --reset to rebuild the database", storedDims, dimensions)
+	}
+
+	if err := initSchema(db, dimensions); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("initializing schema: %w", err)
 	}
 
+	// Store the dimensions.
+	if _, err := db.Exec(`INSERT INTO metadata (key, value) VALUES ('embedding_dimensions', ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+		strconv.Itoa(dimensions)); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("storing embedding dimensions: %w", err)
+	}
+
 	return &VectorStore{
-		db:     db,
-		dbPath: dbPath,
+		db:         db,
+		dbPath:     dbPath,
+		dimensions: dimensions,
 	}, nil
 }
 
-func initSchema(db *sql.DB) error {
+// Dimensions returns the embedding dimension size for this store.
+func (vs *VectorStore) Dimensions() int {
+	return vs.dimensions
+}
+
+func initSchema(db *sql.DB, dimensions int) error {
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS code_items (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -66,7 +115,7 @@ func initSchema(db *sql.DB) error {
 		)`,
 		fmt.Sprintf(`CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
 			embedding float[%d] distance_metric=cosine
-		)`, EmbeddingDimensions),
+		)`, dimensions),
 	}
 
 	for _, stmt := range stmts {
@@ -242,6 +291,7 @@ func (vs *VectorStore) Count() int {
 
 // Reset deletes and recreates the database.
 func (vs *VectorStore) Reset(ctx context.Context) error {
+	dims := vs.dimensions
 	vs.db.Close()
 
 	if err := os.Remove(vs.dbPath); err != nil && !os.IsNotExist(err) {
@@ -253,9 +303,25 @@ func (vs *VectorStore) Reset(ctx context.Context) error {
 		return fmt.Errorf("recreating database: %w", err)
 	}
 
-	if err := initSchema(db); err != nil {
+	// Recreate metadata table and store dimensions.
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS metadata (
+		key TEXT PRIMARY KEY,
+		value TEXT NOT NULL
+	)`); err != nil {
+		db.Close()
+		return fmt.Errorf("creating metadata table: %w", err)
+	}
+
+	if err := initSchema(db, dims); err != nil {
 		db.Close()
 		return fmt.Errorf("reinitializing schema: %w", err)
+	}
+
+	if _, err := db.Exec(`INSERT INTO metadata (key, value) VALUES ('embedding_dimensions', ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+		strconv.Itoa(dims)); err != nil {
+		db.Close()
+		return fmt.Errorf("storing embedding dimensions: %w", err)
 	}
 
 	vs.db = db

@@ -13,9 +13,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 )
 
-// EmbeddingDimensions is the number of dimensions for Cohere Embed v4 embeddings.
-const EmbeddingDimensions = 1536
-
 // Embedder generates vector embeddings from text.
 type Embedder interface {
 	// EmbedDocument generates an embedding for a document (for indexing).
@@ -27,20 +24,82 @@ type Embedder interface {
 	Name() string
 }
 
-// BedrockCohereEmbedder uses an embedding model via AWS Bedrock.
+// --- OpenAI-compatible embedder ---
+
+// OpenAIEmbedder uses any OpenAI-compatible embeddings API.
+// Works with OpenAI, Ollama, Together AI, LM Studio, vLLM, etc.
+type OpenAIEmbedder struct {
+	client *openaiClient
+	model  string
+}
+
+// NewOpenAIEmbedder creates an embedder using the OpenAI embeddings API.
+func NewOpenAIEmbedder(model, baseURL, apiKeyEnv string) (*OpenAIEmbedder, error) {
+	if model == "" {
+		return nil, fmt.Errorf("embeddings.model must be configured in .code-index.json")
+	}
+	client, err := newOpenAIClient(baseURL, apiKeyEnv)
+	if err != nil {
+		return nil, err
+	}
+	return &OpenAIEmbedder{client: client, model: model}, nil
+}
+
+func (e *OpenAIEmbedder) Name() string {
+	return fmt.Sprintf("OpenAI (%s, %s)", e.client.baseURL, e.model)
+}
+
+// EmbedDocument and EmbedQuery produce identical embeddings — the OpenAI
+// embeddings API has no document/query type distinction.
+func (e *OpenAIEmbedder) EmbedDocument(ctx context.Context, text string) ([]float32, error) {
+	return e.embed(ctx, text)
+}
+
+func (e *OpenAIEmbedder) EmbedQuery(ctx context.Context, text string) ([]float32, error) {
+	return e.embed(ctx, text)
+}
+
+func (e *OpenAIEmbedder) embed(ctx context.Context, text string) ([]float32, error) {
+	reqBody := map[string]interface{}{
+		"model": e.model,
+		"input": text,
+	}
+
+	respBody, err := e.client.post(ctx, "/embeddings", reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("OpenAI embeddings: %w", err)
+	}
+
+	var result struct {
+		Data []struct {
+			Embedding []float32 `json:"embedding"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, fmt.Errorf("parsing embeddings response: %w", err)
+	}
+
+	if len(result.Data) == 0 || len(result.Data[0].Embedding) == 0 {
+		return nil, fmt.Errorf("empty embeddings response")
+	}
+
+	return result.Data[0].Embedding, nil
+}
+
+// --- Bedrock Cohere embedder ---
+
+// BedrockCohereEmbedder uses Cohere embedding models via AWS Bedrock.
 type BedrockCohereEmbedder struct {
 	client  *bedrockruntime.Client
 	modelID string
 }
 
-// cohereEmbedRequest is the request body for Cohere embeddings via Bedrock.
 type cohereEmbedRequest struct {
 	Texts          []string `json:"texts"`
 	InputType      string   `json:"input_type"`
 	EmbeddingTypes []string `json:"embedding_types"`
 }
 
-// cohereEmbedResponse is the response body from Cohere embeddings.
 type cohereEmbedResponse struct {
 	Embeddings struct {
 		Float [][]float32 `json:"float"`
@@ -48,8 +107,6 @@ type cohereEmbedResponse struct {
 }
 
 // NewBedrockEmbedder creates an embedder using a Bedrock embedding model.
-// model is the Bedrock model ID (must be configured in .code-index.json).
-// region defaults to "us-east-1" if empty.
 func NewBedrockEmbedder(ctx context.Context, model, region string) (*BedrockCohereEmbedder, error) {
 	if region == "" {
 		region = "us-east-1"
@@ -148,14 +205,17 @@ func (e *BedrockCohereEmbedder) embed(ctx context.Context, text, inputType strin
 	return result.Embeddings.Float[0], nil
 }
 
-// NewEmbedder creates an embedder based on the provider string.
-// model is the embedding model ID. region is the AWS region for Bedrock.
-func NewEmbedder(ctx context.Context, provider, model, region string) (Embedder, error) {
-	switch provider {
+// --- Factory ---
+
+// NewEmbedder creates an embedder based on the provider configuration.
+func NewEmbedder(ctx context.Context, cfg EmbeddingsConfig, awsRegion string) (Embedder, error) {
+	switch cfg.Provider {
+	case "openai":
+		return NewOpenAIEmbedder(cfg.Model, cfg.BaseURL, cfg.APIKeyEnv)
 	case "bedrock", "":
-		return NewBedrockEmbedder(ctx, model, region)
+		return NewBedrockEmbedder(ctx, cfg.Model, awsRegion)
 	default:
-		return nil, fmt.Errorf("unknown embedding provider %q (supported: \"bedrock\")", provider)
+		return nil, fmt.Errorf("unknown embedding provider %q (supported: \"bedrock\", \"openai\")", cfg.Provider)
 	}
 }
 

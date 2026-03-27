@@ -180,16 +180,13 @@ OpenAI:
 }
 ```
 
-Mixed (Anthropic for LLM quality, OpenAI for embeddings since Anthropic
-doesn't offer an embeddings API):
+Mixed providers (Bedrock for LLM quality, OpenAI for embeddings):
 ```json
 {
   "llm": {
-    "provider": "openai",
-    "base_url": "https://api.anthropic.com/v1",
-    "api_key_env": "ANTHROPIC_API_KEY",
-    "function_model": "claude-haiku-4-5-20251001",
-    "summary_model": "claude-sonnet-4-6-20250514"
+    "provider": "bedrock",
+    "function_model": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "summary_model": "us.anthropic.claude-sonnet-4-6"
   },
   "embeddings": {
     "provider": "openai",
@@ -198,6 +195,9 @@ doesn't offer an embeddings API):
   }
 }
 ```
+
+Note: Anthropic's API does not implement the OpenAI chat/completions format,
+so Claude cannot be used via the `openai` provider. Use `bedrock` for Claude.
 
 **Implementation — Go side:**
 

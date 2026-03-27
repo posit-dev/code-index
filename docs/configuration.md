@@ -118,11 +118,13 @@ This indexes the vendored source files and attributes them to their upstream imp
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `provider` | string | no | `"bedrock"` (default) or `"cli"` (Claude Code CLI) |
+| `provider` | string | no | `"bedrock"` (default) or `"openai"` |
+| `base_url` | string | no | API base URL (`openai` provider only, default: `https://api.openai.com/v1`) |
+| `api_key_env` | string | no | Env var name containing API key (`openai` provider only, default: `OPENAI_API_KEY`) |
 | `function_model` | string | yes | Model ID for function-level summaries (high volume, fast) |
 | `summary_model` | string | yes | Model ID for file and package summaries (higher quality) |
 
-#### Bedrock model IDs
+#### Bedrock (default)
 
 For AWS Bedrock, use the full model ID including the region prefix:
 
@@ -134,17 +136,29 @@ For AWS Bedrock, use the full model ID including the region prefix:
 }
 ```
 
-#### Claude Code CLI
-
-If you prefer to use your existing Claude Code authentication:
+#### OpenAI
 
 ```json
 {
-  "provider": "cli"
+  "provider": "openai",
+  "api_key_env": "OPENAI_API_KEY",
+  "function_model": "gpt-4o-mini",
+  "summary_model": "gpt-4o"
 }
 ```
 
-The `function_model` and `summary_model` values are passed as the `--model` flag to `claude -p`. Use model aliases like `"haiku"` or `"sonnet"`.
+#### Ollama (local, no API key)
+
+```json
+{
+  "provider": "openai",
+  "base_url": "http://localhost:11434/v1",
+  "function_model": "llama3.2",
+  "summary_model": "llama3.2"
+}
+```
+
+The `openai` provider works with any OpenAI-compatible API: OpenAI, Ollama, Together AI, Groq, Fireworks, LM Studio, vLLM, Azure OpenAI, etc. Set `base_url` to point at the server and `api_key_env` to the env var containing the API key. For local servers like Ollama, the API key is optional.
 
 ### `embeddings`
 
@@ -152,16 +166,45 @@ The `function_model` and `summary_model` values are passed as the `--model` flag
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `provider` | string | no | `"bedrock"` (default) |
+| `provider` | string | no | `"bedrock"` (default) or `"openai"` |
+| `base_url` | string | no | API base URL (`openai` provider only, default: `https://api.openai.com/v1`) |
+| `api_key_env` | string | no | Env var name containing API key (`openai` provider only, default: `OPENAI_API_KEY`) |
 | `model` | string | yes | Embedding model ID |
 
-Currently only Bedrock is supported. The embedding model must support the Cohere embedding API format (`texts`, `input_type`, `embedding_types`).
+#### Bedrock (default)
+
+Uses the Cohere embedding API format via Bedrock. Supports asymmetric embeddings (separate document/query types) for best retrieval quality.
 
 ```json
 {
   "provider": "bedrock",
   "model": "cohere.embed-v4:0"
 }
+```
+
+#### OpenAI
+
+```json
+{
+  "provider": "openai",
+  "api_key_env": "OPENAI_API_KEY",
+  "model": "text-embedding-3-small"
+}
+```
+
+#### Ollama (local, no API key)
+
+```json
+{
+  "provider": "openai",
+  "base_url": "http://localhost:11434/v1",
+  "model": "nomic-embed-text"
+}
+```
+
+The embedding model must be consistent between indexing and querying — you can't index with one model and search with another. Embedding dimensions are detected automatically from the model's output. If you switch models, run `code-index embed --reset` to rebuild the database.
+
+**Quality note:** Cohere Embed v4 (Bedrock) gives the best code search results thanks to asymmetric document/query embeddings and code-specific training. OpenAI `text-embedding-3-small` is a solid middle ground. Ollama models like `nomic-embed-text` work well for local development at no cost but are ~70-80% the quality of Cohere for code search.
 ```
 
 ### `storage`
