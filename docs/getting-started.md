@@ -51,7 +51,7 @@ No separate installation needed — Claude Code runs it via `npx`:
   "mcpServers": {
     "code-index": {
       "command": "npx",
-      "args": ["@posit-dev/code-index-mcp"]
+      "args": ["@jonyoder/code-index-mcp"]
     }
   }
 }

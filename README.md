@@ -77,7 +77,7 @@ Add the MCP server to your project's `.mcp.json`:
   "mcpServers": {
     "code-index": {
       "command": "npx",
-      "args": ["@posit-dev/code-index-mcp"]
+      "args": ["@jonyoder/code-index-mcp"]
     }
   }
 }

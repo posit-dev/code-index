@@ -57,13 +57,13 @@ new data, without any manual intervention.
 
 ### Publish as npm package
 
-Publish `@posit-dev/code-index-mcp` to npm so any project can use it with:
+Publish `@jonyoder/code-index-mcp` to npm so any project can use it with:
 ```json
 {
   "mcpServers": {
     "code-index": {
       "command": "npx",
-      "args": ["@posit-dev/code-index-mcp"]
+      "args": ["@jonyoder/code-index-mcp"]
     }
   }
 }

@@ -1,5 +1,5 @@
 {
-  "name": "@posit-dev/code-index-mcp",
+  "name": "@jonyoder/code-index-mcp",
   "version": "0.1.0",
   "description": "MCP server for semantic code search using vector embeddings",
   "type": "module",
