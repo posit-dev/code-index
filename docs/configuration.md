@@ -205,7 +205,6 @@ Uses the Cohere embedding API format via Bedrock. Supports asymmetric embeddings
 The embedding model must be consistent between indexing and querying — you can't index with one model and search with another. Embedding dimensions are detected automatically from the model's output. If you switch models, run `code-index embed --reset` to rebuild the database.
 
 **Quality note:** Cohere Embed v4 (Bedrock) gives the best code search results thanks to asymmetric document/query embeddings and code-specific training. OpenAI `text-embedding-3-small` is a solid middle ground. Ollama models like `nomic-embed-text` work well for local development at no cost but are ~70-80% the quality of Cohere for code search.
-```
 
 ### `storage`
 
