@@ -149,7 +149,11 @@ func TestIntegrationPipeline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenVectorStore: %v", err)
 	}
-	defer store.Close()
+	defer func() {
+		if err := store.Close(); err != nil {
+			t.Logf("warning: closing store: %v", err)
+		}
+	}()
 
 	embedded := 0
 	for _, fn := range index.Functions {

@@ -14,7 +14,11 @@ func TestVectorStoreAddAndSearch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenVectorStore: %v", err)
 	}
-	defer store.Close()
+	defer func() {
+		if err := store.Close(); err != nil {
+			t.Logf("warning: closing store: %v", err)
+		}
+	}()
 
 	ctx := context.Background()
 
@@ -78,7 +82,11 @@ func TestVectorStoreUpsert(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenVectorStore: %v", err)
 	}
-	defer store.Close()
+	defer func() {
+		if err := store.Close(); err != nil {
+			t.Logf("warning: closing store: %v", err)
+		}
+	}()
 
 	ctx := context.Background()
 	meta := DocumentMetadata{Kind: "function", Name: "Get", File: "cache.go", Line: 32}
@@ -121,7 +129,11 @@ func TestVectorStoreReset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenVectorStore: %v", err)
 	}
-	defer store.Close()
+	defer func() {
+		if err := store.Close(); err != nil {
+			t.Logf("warning: closing store: %v", err)
+		}
+	}()
 
 	ctx := context.Background()
 	meta := DocumentMetadata{Kind: "function", Name: "Get"}
@@ -151,7 +163,9 @@ func TestVectorStoreDimensionMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenVectorStore(4): %v", err)
 	}
-	store.Close()
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
 
 	// Reopen with different dimensions — should error.
 	_, err = OpenVectorStore(dir, 8)
@@ -164,7 +178,11 @@ func TestVectorStoreDimensionMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenVectorStore(0): %v", err)
 	}
-	defer store2.Close()
+	defer func() {
+		if err := store2.Close(); err != nil {
+			t.Logf("warning: closing store: %v", err)
+		}
+	}()
 
 	if got := store2.Dimensions(); got != 4 {
 		t.Errorf("Dimensions() = %d, want 4", got)

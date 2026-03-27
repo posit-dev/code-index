@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"os"
 	"path/filepath"
@@ -41,12 +42,21 @@ func OpenVectorStore(outputDir string, dimensions int) (*VectorStore, error) {
 		return nil, fmt.Errorf("opening vector database: %w", err)
 	}
 
+	// Close db on any error after this point.
+	success := false
+	defer func() {
+		if !success {
+			if cerr := db.Close(); cerr != nil {
+				log.Printf("warning: closing database after error: %v", cerr)
+			}
+		}
+	}()
+
 	// Create the metadata table first (always safe).
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS metadata (
 		key TEXT PRIMARY KEY,
 		value TEXT NOT NULL
 	)`); err != nil {
-		_ = db.Close() //nolint:errcheck
 		return nil, fmt.Errorf("creating metadata table: %w", err)
 	}
 
@@ -62,18 +72,15 @@ func OpenVectorStore(outputDir string, dimensions int) (*VectorStore, error) {
 		dimensions = storedDims
 	}
 	if dimensions == 0 {
-		_ = db.Close() //nolint:errcheck
 		return nil, fmt.Errorf("embedding dimensions unknown — run 'code-index embed' to build the database")
 	}
 
 	// Validate dimension consistency.
 	if storedDims > 0 && dimensions != storedDims {
-		_ = db.Close() //nolint:errcheck
 		return nil, fmt.Errorf("embedding dimensions changed (was %d, now %d) — run with --reset to rebuild the database", storedDims, dimensions)
 	}
 
 	if err := initSchema(db, dimensions); err != nil {
-		db.Close()
 		return nil, fmt.Errorf("initializing schema: %w", err)
 	}
 
@@ -81,10 +88,10 @@ func OpenVectorStore(outputDir string, dimensions int) (*VectorStore, error) {
 	if _, err := db.Exec(`INSERT INTO metadata (key, value) VALUES ('embedding_dimensions', ?)
 		ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
 		strconv.Itoa(dimensions)); err != nil {
-		db.Close()
 		return nil, fmt.Errorf("storing embedding dimensions: %w", err)
 	}
 
+	success = true
 	return &VectorStore{
 		db:         db,
 		dbPath:     dbPath,
@@ -222,7 +229,11 @@ func (vs *VectorStore) Search(ctx context.Context, queryEmbedding []float32, max
 	if err != nil {
 		return nil, fmt.Errorf("querying vectors: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if cerr := rows.Close(); cerr != nil {
+			log.Printf("warning: closing rows: %v", cerr)
+		}
+	}()
 
 	var results []SearchResult
 	for rows.Next() {
@@ -292,7 +303,9 @@ func (vs *VectorStore) Count() int {
 // Reset deletes and recreates the database.
 func (vs *VectorStore) Reset(ctx context.Context) error {
 	dims := vs.dimensions
-	vs.db.Close()
+	if err := vs.db.Close(); err != nil {
+		log.Printf("warning: closing database before reset: %v", err)
+	}
 
 	if err := os.Remove(vs.dbPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("removing database: %w", err)
@@ -303,27 +316,35 @@ func (vs *VectorStore) Reset(ctx context.Context) error {
 		return fmt.Errorf("recreating database: %w", err)
 	}
 
+	// Close db on any error after this point.
+	success := false
+	defer func() {
+		if !success {
+			if cerr := db.Close(); cerr != nil {
+				log.Printf("warning: closing database after reset error: %v", cerr)
+			}
+		}
+	}()
+
 	// Recreate metadata table and store dimensions.
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS metadata (
 		key TEXT PRIMARY KEY,
 		value TEXT NOT NULL
 	)`); err != nil {
-		db.Close()
 		return fmt.Errorf("creating metadata table: %w", err)
 	}
 
 	if err := initSchema(db, dims); err != nil {
-		db.Close()
 		return fmt.Errorf("reinitializing schema: %w", err)
 	}
 
 	if _, err := db.Exec(`INSERT INTO metadata (key, value) VALUES ('embedding_dimensions', ?)
 		ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
 		strconv.Itoa(dims)); err != nil {
-		db.Close()
 		return fmt.Errorf("storing embedding dimensions: %w", err)
 	}
 
+	success = true
 	vs.db = db
 	return nil
 }

@@ -412,17 +412,23 @@ func (g *Generator) Generate(parsed *ParseResult, diff *DiffResult, cache *Cache
 
 	// Clean up removed entries.
 	for _, key := range diff.RemovedFunctions {
-		os.Remove(funcDocPath(docsDir, key))
+		if err := os.Remove(funcDocPath(docsDir, key)); err != nil && !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "  warning: removing doc %s: %v\n", key, err)
+		}
 		delete(cache.Functions, key)
 		stats.FunctionsRemoved++
 	}
 	for _, key := range diff.RemovedFiles {
-		os.Remove(fileDocPath(docsDir, key))
+		if err := os.Remove(fileDocPath(docsDir, key)); err != nil && !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "  warning: removing doc %s: %v\n", key, err)
+		}
 		delete(cache.Files, key)
 		stats.FilesRemoved++
 	}
 	for _, key := range diff.RemovedPackages {
-		os.Remove(pkgDocPath(docsDir, key))
+		if err := os.Remove(pkgDocPath(docsDir, key)); err != nil && !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "  warning: removing doc %s: %v\n", key, err)
+		}
 		delete(cache.Packages, key)
 		stats.PackagesRemoved++
 	}
@@ -703,9 +709,10 @@ func extractFirstJSON(s string) string {
 		if inString {
 			continue
 		}
-		if c == '{' {
+		switch c {
+		case '{':
 			depth++
-		} else if c == '}' {
+		case '}':
 			depth--
 			if depth == 0 {
 				return s[start : i+1]
