@@ -1,0 +1,21 @@
+# Code index generated data
+.code-index/
+
+# Go
+/code-index
+bin/
+*.exe
+*.test
+
+# Node
+node_modules/
+dist/
+mcp/node_modules/
+
+# IDE
+.idea/
+.vscode/
+*.code-workspace
+
+# OS
+.DS_Store

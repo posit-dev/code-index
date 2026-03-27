@@ -1,0 +1,35 @@
+{
+  "name": "@posit-dev/code-index-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for semantic code search using vector embeddings",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "code-index-mcp": "dist/index.js"
+  },
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "build": "tsc",
+    "prepublishOnly": "npm run build",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "@aws-sdk/client-bedrock-runtime": "^3.800.0",
+    "@aws-sdk/credential-providers": "^3.800.0",
+    "better-sqlite3": "^11.0.0",
+    "sqlite-vec": "^0.1.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.0",
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "license": "MIT"
+}

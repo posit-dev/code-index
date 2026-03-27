@@ -1,0 +1,44 @@
+{
+  "project": "my-project",
+  "sources": [
+    {
+      "path": "src",
+      "language": "go",
+      "exclude": ["**/vendor/**", "**/*_test.go", "**/testdata/**"],
+      "vendor_include": []
+    },
+    {
+      "path": "frontend/src",
+      "language": "typescript",
+      "exclude": ["**/*.test.ts", "**/*.spec.ts", "**/__tests__/**"]
+    },
+    {
+      "path": "scripts",
+      "language": "python",
+      "exclude": ["**/__pycache__/**"]
+    },
+    {
+      "path": "docs",
+      "language": "markdown",
+      "exclude": ["**/_site/**"]
+    }
+  ],
+  "llm": {
+    "provider": "bedrock",
+    "function_model": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "summary_model": "us.anthropic.claude-sonnet-4-6"
+  },
+  "embeddings": {
+    "provider": "bedrock",
+    "model": "cohere.embed-v4:0"
+  },
+  "storage": {
+    "s3_bucket": "my-code-index",
+    "s3_prefix": "vectors"
+  },
+  "aws": {
+    "region": "us-east-1",
+    "account": "123456789012",
+    "profiles": ["default"]
+  }
+}
