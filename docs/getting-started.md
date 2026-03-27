@@ -51,7 +51,7 @@ No separate installation needed — Claude Code runs it via `npx`:
   "mcpServers": {
     "code-index": {
       "command": "npx",
-      "args": ["@jonyoder/code-index-mcp"]
+      "args": ["-y", "@jonyoder/code-index-mcp"]
     }
   }
 }
@@ -189,7 +189,11 @@ code-index search --max-results 20 "database transaction management"
 
 ### From Claude Code
 
-Once the MCP server is configured in `.mcp.json`, Claude Code uses `code_search` proactively. You can also ask Claude directly:
+Once the MCP server is configured in `.mcp.json`, Claude Code uses `code_search` proactively. If your team distributes the vector database via S3 or HTTP URL, the MCP server downloads it automatically on first search.
+
+For S3, the MCP server auto-detects AWS profiles from `aws.profiles` in `.code-index.json` — you just need to be logged in with `aws sso login`.
+
+You can also ask Claude directly:
 
 > "Use code_search to find how authentication works in this project."
 

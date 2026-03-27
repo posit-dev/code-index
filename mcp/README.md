@@ -33,7 +33,7 @@ Add to your project's `.mcp.json`:
   "mcpServers": {
     "code-index": {
       "command": "npx",
-      "args": ["@jonyoder/code-index-mcp"]
+      "args": ["-y", "@jonyoder/code-index-mcp"]
     }
   }
 }
@@ -59,8 +59,9 @@ The server reads `.code-index.json` from your repository root for embedding prov
 ## Requirements
 
 - **Node.js 20+**
-- A built code-index database (`.code-index/code-index.db`)
+- A built code-index database (`.code-index/code-index.db`), or storage configured in `.code-index.json` for automatic download from S3/HTTP
 - An embedding provider configured (AWS Bedrock, OpenAI, or Ollama)
+- For S3 storage: AWS credentials (the server auto-detects profiles from `aws.profiles` in `.code-index.json`)
 
 ## License
 

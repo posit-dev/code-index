@@ -34,6 +34,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
+      contents: read
       id-token: write  # Required for OIDC AWS auth
 
     steps:
@@ -42,8 +43,11 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version-file: 'go.mod'
+          go-version: '1.26'
           cache: true
+
+      - name: Install libsqlite3-dev
+        run: sudo apt-get install -y libsqlite3-dev
 
       - name: Install code-index
         run: go install github.com/posit-dev/code-index/cmd/code-index@latest
@@ -67,7 +71,15 @@ jobs:
 
       - name: Pull existing index data
         if: github.event.inputs.reset != 'true'
-        run: ./scripts/pull-code-index-vectors.sh --quiet || true
+        run: |
+          S3_BUCKET="${{ steps.config.outputs.s3_bucket }}"
+          S3_PREFIX="${{ steps.config.outputs.s3_prefix }}"
+          mkdir -p .code-index
+          aws s3 cp "s3://${S3_BUCKET}/${S3_PREFIX}/latest.tar.gz" /tmp/code-index.tar.gz --quiet || true
+          if [ -f /tmp/code-index.tar.gz ]; then
+            tar xzf /tmp/code-index.tar.gz -C .code-index
+            echo "Pulled existing index data from S3"
+          fi
 
       - name: Parse source files
         run: code-index parse

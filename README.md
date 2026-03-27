@@ -77,13 +77,15 @@ Add the MCP server to your project's `.mcp.json`:
   "mcpServers": {
     "code-index": {
       "command": "npx",
-      "args": ["@jonyoder/code-index-mcp"]
+      "args": ["-y", "@jonyoder/code-index-mcp"]
     }
   }
 }
 ```
 
 Claude Code will use `code_search` proactively when working in your codebase.
+
+If your team distributes the vector database via S3 or HTTP URL (see [CI Setup](docs/ci-setup.md)), the MCP server automatically downloads it on first search — no manual setup needed.
 
 ## How it works
 
