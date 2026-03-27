@@ -110,7 +110,7 @@ jobs:
           echo "npm version: $(npm --version)"
 
       - name: Install dependencies
-        run: npm ci
+        run: npm install
 
       - name: Set version from tag
         run: |
