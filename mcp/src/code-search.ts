@@ -493,18 +493,30 @@ export function registerCodeSearchTool(server: McpServer): void {
 
         // Find the database.
         let dbPath = findDatabase(cwd);
+        let pullError: string | undefined;
         if (!dbPath && repoRoot) {
           // No local database — try to download from configured storage.
           // This blocks on first use but is needed to bootstrap.
           try {
             await initialPull(repoRoot, config);
             dbPath = findDatabase(cwd);
-          } catch {
-            // Pull failed — fall through to error message
+          } catch (e) {
+            pullError = e instanceof Error ? e.message : String(e);
           }
         }
 
         if (!dbPath) {
+          let errorMsg =
+            "Vector database not found. Run 'code-index all' to build the index, " +
+            "or ensure .code-index/code-index.db exists.";
+          if (pullError) {
+            errorMsg += ` Auto-download failed: ${pullError}`;
+          }
+          if (!repoRoot) {
+            errorMsg += " Could not find .code-index.json in any parent directory.";
+          } else if (!config.storage?.s3_bucket && !config.storage?.url) {
+            errorMsg += " No storage configured in .code-index.json (set storage.s3_bucket or storage.url).";
+          }
           return {
             content: [
               {
@@ -512,9 +524,7 @@ export function registerCodeSearchTool(server: McpServer): void {
                 text: JSON.stringify(
                   {
                     status: "error",
-                    error:
-                      "Vector database not found. Run 'code-index all' to build the index, " +
-                      "or ensure .code-index/code-index.db exists.",
+                    error: errorMsg,
                   },
                   null,
                   2
