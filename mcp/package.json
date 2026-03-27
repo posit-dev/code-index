@@ -7,6 +7,22 @@
   "bin": {
     "code-index-mcp": "dist/index.js"
   },
+  "files": [
+    "dist"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/posit-dev/code-index.git",
+    "directory": "mcp"
+  },
+  "homepage": "https://github.com/posit-dev/code-index",
+  "keywords": [
+    "mcp",
+    "code-search",
+    "semantic-search",
+    "vector-embeddings",
+    "claude-code"
+  ],
   "scripts": {
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",

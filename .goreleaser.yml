@@ -1,0 +1,48 @@
+version: 2
+
+project_name: code-index
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: code-index
+    main: ./cmd/code-index/
+    binary: code-index
+    env:
+      - CGO_ENABLED=1
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      # CGO cross-compilation is complex — build native only per runner
+      - goos: linux
+        goarch: arm64
+
+archives:
+  - id: default
+    formats: ['tar.gz']
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+
+checksum:
+  name_template: 'checksums.txt'
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^ci:'
+
+release:
+  github:
+    owner: posit-dev
+    name: code-index
+  draft: false
+  prerelease: auto

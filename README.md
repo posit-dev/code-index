@@ -29,6 +29,8 @@ It works by generating natural language summaries of every function, file, and p
 
 ### 1. Install
 
+Download a pre-built binary from [Releases](https://github.com/posit-dev/code-index/releases), or install from source:
+
 ```bash
 go install github.com/posit-dev/code-index/cmd/code-index@latest
 ```

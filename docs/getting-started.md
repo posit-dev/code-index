@@ -22,11 +22,19 @@ This guide walks you through setting up code-index for your project.
 
 ### CLI tool
 
+**Pre-built binaries** (recommended):
+
+Download the latest release for your platform from
+[GitHub Releases](https://github.com/posit-dev/code-index/releases) and
+add it to your PATH.
+
+**From source** (requires Go 1.21+):
+
 ```bash
 go install github.com/posit-dev/code-index/cmd/code-index@latest
 ```
 
-Or build from source:
+Or clone and build:
 
 ```bash
 git clone https://github.com/posit-dev/code-index.git
