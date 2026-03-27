@@ -4,14 +4,41 @@ Items to convert to GitHub issues once the repo is created.
 
 ## MCP Server Enhancements
 
-### Auto-update vector database from S3
+### Auto-update vector database
 
 The MCP tool should automatically check for and pull updated vector databases
-from S3 without requiring manual `pull-code-index-vectors.sh` runs.
+without requiring manual script runs.
 
-**Proposed behavior:**
+**Storage providers:**
+
+The tool supports two download providers, auto-detected from config:
+
+1. **S3** — for AWS-heavy orgs. Uses AWS SDK credential chain (SSO, IAM roles).
+   ```json
+   {"storage": {"s3_bucket": "my-index", "s3_prefix": "vectors"}}
+   ```
+
+2. **HTTP URL** — universal, works with any hosting (GitHub Releases, GCS,
+   Azure Blob, Artifactory, CDNs, internal servers).
+   ```json
+   {"storage": {"url": "https://example.com/code-index/latest.tar.gz"}}
+   ```
+   For authenticated endpoints, set `auth_token_env` to the env var name
+   containing a bearer token:
+   ```json
+   {"storage": {"url": "https://github.com/org/repo/releases/download/code-index/latest.tar.gz", "auth_token_env": "GITHUB_TOKEN"}}
+   ```
+
+The SHA URL is derived automatically (`{url}.sha256`). Auto-detect: if `url`
+is set, use HTTP; if `s3_bucket` is set, use S3.
+
+**Upload is the user's responsibility.** The tool only handles downloading.
+CI docs provide copy-paste examples for common platforms (S3, GitHub Releases,
+GCS, Azure Blob).
+
+**Proposed auto-update behavior:**
 1. On each search, check `.vectors-sha256` file age
-2. If older than 1 hour, fetch `latest.sha256` from S3 (one small GET)
+2. If older than 1 hour, fetch the SHA file (one small GET)
 3. If SHA differs from local, download new DB in the background
 4. Current search uses existing DB immediately (never blocks)
 5. Next search uses the updated DB
@@ -25,7 +52,7 @@ from S3 without requiring manual `pull-code-index-vectors.sh` runs.
 - SQLite is opened readonly by the MCP tool, so no WAL conflicts
 
 **SHA check frequency:** Cache the remote SHA for 1 hour to avoid excessive
-S3 calls. This means developers get updates within ~1 hour of CI pushing
+calls. This means developers get updates within ~1 hour of CI pushing
 new data, without any manual intervention.
 
 ### Publish as npm package
@@ -126,7 +153,7 @@ Consider using GoReleaser for automated cross-compilation.
 
 ## Architecture
 
-### Add OpenAI-compatible provider for LLM and embeddings
+### ~~Add OpenAI-compatible provider for LLM and embeddings~~ (DONE)
 
 The OpenAI chat/completions and embeddings API format has become the de facto
 standard. Ollama, OpenAI, Together AI, Groq, Fireworks, LM Studio, Azure
