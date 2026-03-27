@@ -223,14 +223,66 @@ async function downloadUrl(
   writeFileSync(destPath, buffer);
 }
 
+/**
+ * Find a working AWS profile that can access the configured account.
+ * Tries profiles from .code-index.json aws.profiles until one matches
+ * the configured aws.account. Returns the env vars to use for AWS CLI calls.
+ */
+function findAwsEnv(config: CodeIndexConfig): Record<string, string> {
+  const env = { ...process.env } as Record<string, string>;
+  const targetAccount = config.aws?.account;
+  const region = config.aws?.region || "us-east-1";
+  env["AWS_REGION"] = region;
+
+  // If CODE_INDEX_AWS_PROFILE is explicitly set, use it.
+  if (process.env["CODE_INDEX_AWS_PROFILE"]) {
+    env["AWS_PROFILE"] = process.env["CODE_INDEX_AWS_PROFILE"];
+    return env;
+  }
+
+  // If no target account configured, use current credentials as-is.
+  if (!targetAccount) return env;
+
+  // Try current profile first.
+  try {
+    const account = execSync(
+      'aws sts get-caller-identity --query "Account" --output text 2>/dev/null',
+      { timeout: 10000, encoding: "utf-8", env }
+    ).trim();
+    if (account === targetAccount) return env;
+  } catch {
+    // Current profile doesn't work
+  }
+
+  // Try each configured profile.
+  const profiles = config.aws?.profiles || [];
+  for (const profile of profiles) {
+    const tryEnv = { ...env, AWS_PROFILE: profile };
+    try {
+      const account = execSync(
+        'aws sts get-caller-identity --query "Account" --output text 2>/dev/null',
+        { timeout: 10000, encoding: "utf-8", env: tryEnv }
+      ).trim();
+      if (account === targetAccount) return tryEnv;
+    } catch {
+      // This profile doesn't work, try next
+    }
+  }
+
+  // No matching profile found — return default env and let it fail
+  // with a clear error from the AWS CLI.
+  return env;
+}
+
 async function fetchS3Sha(config: CodeIndexConfig): Promise<string | null> {
   const bucket = config.storage?.s3_bucket;
   const prefix = config.storage?.s3_prefix || "vectors";
   if (!bucket) return null;
+  const env = findAwsEnv(config);
   try {
     const result = execSync(
       `aws s3 cp "s3://${bucket}/${prefix}/latest.sha256" - 2>/dev/null`,
-      { timeout: 15000, encoding: "utf-8" }
+      { timeout: 15000, encoding: "utf-8", env }
     );
     return result.trim().split(/\s/)[0] || null;
   } catch {
@@ -244,9 +296,10 @@ async function downloadS3(
 ): Promise<void> {
   const bucket = config.storage?.s3_bucket;
   const prefix = config.storage?.s3_prefix || "vectors";
+  const env = findAwsEnv(config);
   execSync(`aws s3 cp "s3://${bucket}/${prefix}/latest.tar.gz" "${destPath}" --quiet`, {
     timeout: 120000,
-    env: { ...process.env },
+    env,
   });
 }
 
