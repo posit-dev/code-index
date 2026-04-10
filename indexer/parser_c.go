@@ -10,24 +10,21 @@ import (
 
 	sitter "github.com/smacker/go-tree-sitter"
 	treesitterc "github.com/smacker/go-tree-sitter/c"
-	"github.com/smacker/go-tree-sitter/cpp"
 )
 
-// CParser extracts structured information from C/C++ source files using tree-sitter.
+// CParser extracts structured information from C source files using tree-sitter.
 type CParser struct {
 	srcRoot  string
 	excludes []string
 	cLang    *sitter.Language
-	cppLang  *sitter.Language
 }
 
-// NewCParser creates a new C/C++ parser.
+// NewCParser creates a new C parser.
 func NewCParser(srcRoot string, excludes []string) *CParser {
 	return &CParser{
 		srcRoot:  srcRoot,
 		excludes: excludes,
 		cLang:    treesitterc.GetLanguage(),
-		cppLang:  cpp.GetLanguage(),
 	}
 }
 
@@ -47,9 +44,7 @@ func (p *CParser) Parse(result *ParseResult) error {
 		}
 
 		ext := filepath.Ext(path)
-		isCPP := ext == ".cpp" || ext == ".cc" || ext == ".hpp" || ext == ".cxx"
-		isC := ext == ".c" || ext == ".h"
-		if !isC && !isCPP {
+		if ext != ".c" && ext != ".h" {
 			return nil
 		}
 
@@ -67,22 +62,18 @@ func (p *CParser) Parse(result *ParseResult) error {
 			}
 		}
 
-		return p.parseFile(path, relPath, isCPP, result)
+		return p.parseFile(path, relPath, result)
 	})
 }
 
-func (p *CParser) parseFile(path, relPath string, isCPP bool, result *ParseResult) error {
+func (p *CParser) parseFile(path, relPath string, result *ParseResult) error {
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return nil
 	}
 
 	parser := sitter.NewParser()
-	if isCPP {
-		parser.SetLanguage(p.cppLang)
-	} else {
-		parser.SetLanguage(p.cLang)
-	}
+	parser.SetLanguage(p.cLang)
 
 	tree, err := parser.ParseCtx(context.Background(), nil, content)
 	if err != nil {
@@ -102,7 +93,7 @@ func (p *CParser) parseFile(path, relPath string, isCPP bool, result *ParseResul
 		ImportPath: importPath,
 	}
 
-	p.extractDeclarations(root, content, fileInfo, isCPP)
+	p.extractDeclarations(root, content, fileInfo)
 
 	fileInfo.ASTHash = hashString(string(content))
 
@@ -121,7 +112,7 @@ func (p *CParser) parseFile(path, relPath string, isCPP bool, result *ParseResul
 	return nil
 }
 
-func (p *CParser) extractDeclarations(node *sitter.Node, content []byte, fileInfo *FileInfo, isCPP bool) {
+func (p *CParser) extractDeclarations(node *sitter.Node, content []byte, fileInfo *FileInfo) {
 	for i := 0; i < int(node.ChildCount()); i++ {
 		child := node.Child(i)
 		nodeType := child.Type()
@@ -153,26 +144,10 @@ func (p *CParser) extractDeclarations(node *sitter.Node, content []byte, fileInf
 				fileInfo.Types = append(fileInfo.Types, *t)
 			}
 
-		// C++ specific
-		case "class_specifier":
-			if isCPP {
-				if t := p.extractClass(child, content, fileInfo.Path); t != nil {
-					fileInfo.Types = append(fileInfo.Types, *t)
-				}
-			}
-
-		case "namespace_definition":
-			if isCPP {
-				// Recurse into namespace body.
-				if body := child.ChildByFieldName("body"); body != nil {
-					p.extractDeclarations(body, content, fileInfo, isCPP)
-				}
-			}
-
 		// Preprocessor blocks — recurse into their bodies to find declarations
 		// inside #ifndef/#ifdef/#if guards (common in header files).
 		case "preproc_ifdef", "preproc_if", "preproc_else", "preproc_elif":
-			p.extractDeclarations(child, content, fileInfo, isCPP)
+			p.extractDeclarations(child, content, fileInfo)
 		}
 	}
 }
@@ -311,26 +286,6 @@ func (p *CParser) extractTypedef(node *sitter.Node, content []byte, filePath str
 	return &TypeInfo{
 		Name:     name,
 		Kind:     "typedef",
-		Doc:      doc,
-		File:     filePath,
-		Line:     int(node.StartPoint().Row) + 1,
-		Exported: true,
-		ASTHash:  hashString(node.Content(content)),
-	}
-}
-
-func (p *CParser) extractClass(node *sitter.Node, content []byte, filePath string) *TypeInfo {
-	nameNode := node.ChildByFieldName("name")
-	if nameNode == nil {
-		return nil
-	}
-
-	name := nameNode.Content(content)
-	doc := extractPrecedingComment(node, content)
-
-	return &TypeInfo{
-		Name:     name,
-		Kind:     "class",
 		Doc:      doc,
 		File:     filePath,
 		Line:     int(node.StartPoint().Row) + 1,

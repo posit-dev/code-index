@@ -86,10 +86,16 @@ func runParse(cmd *cobra.Command, args []string) error {
 				return fmt.Errorf("parsing R source %s: %w", source.Path, err)
 			}
 
-		case "c", "cpp":
+		case "c":
 			parser := indexer.NewCParser(srcPath, source.Exclude)
 			if err := parser.Parse(result); err != nil {
-				return fmt.Errorf("parsing C/C++ source %s: %w", source.Path, err)
+				return fmt.Errorf("parsing C source %s: %w", source.Path, err)
+			}
+
+		case "cpp":
+			parser := indexer.NewCPPParser(srcPath, source.Exclude)
+			if err := parser.Parse(result); err != nil {
+				return fmt.Errorf("parsing C++ source %s: %w", source.Path, err)
 			}
 
 		case "markdown":

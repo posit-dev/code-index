@@ -258,7 +258,7 @@ func TestPythonParser(t *testing.T) {
 	}
 }
 
-// --- C/C++ Parser ---
+// --- C Parser ---
 
 func TestCParser(t *testing.T) {
 	srcRoot := filepath.Join(testdataDir(), "c")
@@ -303,8 +303,23 @@ func TestCParser(t *testing.T) {
 	if create == nil {
 		t.Error("function hash_table_create not found in header")
 	}
+}
 
-	// Check C++ file.
+// --- C++ Parser ---
+
+func TestCPPParser(t *testing.T) {
+	srcRoot := filepath.Join(testdataDir(), "c")
+	parser := NewCPPParser(srcRoot, nil)
+	result := NewParseResult()
+	if err := parser.Parse(result); err != nil {
+		t.Fatalf("Parse() error: %v", err)
+	}
+
+	if len(result.Files) == 0 {
+		t.Fatal("expected at least one file parsed")
+	}
+
+	// Check .cpp file.
 	var cppInfo *FileInfo
 	for _, f := range result.Files {
 		if filepath.Base(f.Path) == "string_pool.cpp" {
@@ -322,6 +337,58 @@ func TestCParser(t *testing.T) {
 		t.Error("type StringPool not found in string_pool.cpp")
 	} else if stringPool.Kind != "class" {
 		t.Errorf("StringPool.Kind = %q, want %q", stringPool.Kind, "class")
+	}
+
+	// Check .hpp header file.
+	var hppInfo *FileInfo
+	for _, f := range result.Files {
+		if filepath.Base(f.Path) == "container.hpp" {
+			hppInfo = f
+			break
+		}
+	}
+	if hppInfo == nil {
+		t.Fatal("container.hpp not found in parsed files")
+	}
+
+	// Should have template class with namespace-qualified name.
+	container := findType(hppInfo.Types, "template<typename T> testlib::collections::Container")
+	if container == nil {
+		t.Error("template class Container not found in container.hpp")
+	} else {
+		if container.Kind != "class" {
+			t.Errorf("Container.Kind = %q, want %q", container.Kind, "class")
+		}
+		// Should have methods.
+		if len(container.Methods) == 0 {
+			t.Error("Container should have methods")
+		}
+	}
+
+	// Should have struct with namespace-qualified name.
+	fileEntry := findType(hppInfo.Types, "testlib::collections::FileEntry")
+	if fileEntry == nil {
+		t.Error("struct FileEntry not found in container.hpp")
+	} else {
+		if fileEntry.Kind != "struct" {
+			t.Errorf("FileEntry.Kind = %q, want %q", fileEntry.Kind, "struct")
+		}
+		// Should have fields.
+		if len(fileEntry.Fields) == 0 {
+			t.Error("FileEntry should have fields")
+		}
+		// Should have methods.
+		if len(fileEntry.Methods) == 0 {
+			t.Error("FileEntry should have methods")
+		}
+	}
+
+	// Should have enum with namespace-qualified name.
+	status := findType(hppInfo.Types, "testlib::collections::Status")
+	if status == nil {
+		t.Error("enum Status not found in container.hpp")
+	} else if status.Kind != "enum" {
+		t.Errorf("Status.Kind = %q, want %q", status.Kind, "enum")
 	}
 }
 
