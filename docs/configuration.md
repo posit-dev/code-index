@@ -90,8 +90,8 @@ Each source object defines a directory to index:
 | `typescript` | `.ts`, `.tsx`, `.js`, `.jsx`, `.vue` | tree-sitter — functions, classes, interfaces, enums, JSDoc |
 | `javascript` | `.js`, `.jsx` | tree-sitter (same as typescript) |
 | `python` | `.py` | tree-sitter — functions, classes, decorators, docstrings |
-| `c` | `.c`, `.h`, `.cpp`, `.cc`, `.hpp` | tree-sitter — functions, structs, classes, enums, typedefs, Doxygen |
-| `cpp` | `.c`, `.h`, `.cpp`, `.cc`, `.hpp` | tree-sitter (same as c) |
+| `c` | `.c`, `.h` | tree-sitter — functions, structs, enums, typedefs, Doxygen |
+| `cpp` | `.cpp`, `.cc`, `.hpp`, `.cxx`, `.hxx`, `.h` | tree-sitter — functions, classes, structs, namespaces, templates, enums, typedefs, Doxygen |
 | `r` | `.R`, `.r` | Native Rscript with regex fallback — functions, roxygen, S4/R6 classes |
 | `markdown` | `.md`, `.qmd` | Regex — headings as sections, YAML front matter |
 
