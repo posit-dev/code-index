@@ -44,7 +44,7 @@ func (p *CPPParser) Parse(result *ParseResult) error {
 		}
 
 		ext := filepath.Ext(path)
-		if ext != ".cpp" && ext != ".cc" && ext != ".hpp" && ext != ".cxx" && ext != ".hxx" && ext != ".h" {
+		if ext != ".cpp" && ext != ".cc" && ext != ".hpp" && ext != ".cxx" && ext != ".hxx" {
 			return nil
 		}
 
@@ -859,37 +859,67 @@ func extractCPPNameWithQualifier(declarator *sitter.Node, content []byte) (strin
 }
 
 // extractCPPQualifiedName handles qualified identifiers like Foo::bar or ns::Foo::bar.
-// Returns (name, receiver) where receiver is the immediate class qualifier if present.
+// Returns (name, receiver). For member functions, receiver is the full qualifier
+// (for example, ns::Foo). For namespace-qualified free functions, the full
+// qualified name is returned in name and receiver is empty.
 func extractCPPQualifiedName(node *sitter.Node, content []byte) (string, string) {
-	// Collect all parts of the qualified name.
-	var parts []string
+	var parts []cppQualifiedPart
 	collectCPPQualifiedParts(node, content, &parts)
 
 	if len(parts) == 0 {
 		return "", ""
 	}
 	if len(parts) == 1 {
-		return parts[0], ""
+		return parts[0].text, ""
 	}
 
-	// Last part is the name, second-to-last is the class (receiver).
-	name := parts[len(parts)-1]
-	receiver := parts[len(parts)-2]
-	return name, receiver
+	name := parts[len(parts)-1].text
+	qualifierParts := parts[:len(parts)-1]
+	lastQualifier := qualifierParts[len(qualifierParts)-1]
+
+	qualifierTexts := make([]string, 0, len(qualifierParts))
+	for _, part := range qualifierParts {
+		qualifierTexts = append(qualifierTexts, part.text)
+	}
+
+	switch lastQualifier.kind {
+	case "namespace_identifier":
+		// Namespace-qualified free function: keep the full qualifier in the name.
+		return strings.Join(append(qualifierTexts, name), "::"), ""
+	case "type_identifier", "template_type", "identifier":
+		// Member function: keep the full qualifier chain as the receiver.
+		return name, strings.Join(qualifierTexts, "::")
+	default:
+		// Fall back to preserving the full qualifier in the name.
+		return strings.Join(append(qualifierTexts, name), "::"), ""
+	}
 }
 
-// collectCPPQualifiedParts recursively collects parts of a qualified identifier.
-func collectCPPQualifiedParts(node *sitter.Node, content []byte, parts *[]string) {
+type cppQualifiedPart struct {
+	text string
+	kind string
+}
+
+// collectCPPQualifiedParts recursively collects parts of a qualified identifier
+// along with their syntactic kinds so namespaces can be distinguished from types.
+func collectCPPQualifiedParts(node *sitter.Node, content []byte, parts *[]cppQualifiedPart) {
 	for i := 0; i < int(node.ChildCount()); i++ {
 		child := node.Child(i)
 		switch child.Type() {
 		case "namespace_identifier", "identifier", "type_identifier":
-			*parts = append(*parts, child.Content(content))
+			*parts = append(*parts, cppQualifiedPart{
+				text: child.Content(content),
+				kind: child.Type(),
+			})
 		case "template_type":
-			// Handle Container<T>.
+			// Handle Container<T> by recording the template type name as a type-like qualifier.
 			for j := 0; j < int(child.ChildCount()); j++ {
-				if child.Child(j).Type() == "type_identifier" {
-					*parts = append(*parts, child.Child(j).Content(content))
+				grandchild := child.Child(j)
+				if grandchild.Type() == "type_identifier" {
+					*parts = append(*parts, cppQualifiedPart{
+						text: grandchild.Content(content),
+						kind: "template_type",
+					})
 					break
 				}
 			}
