@@ -12,17 +12,6 @@ import (
 	"github.com/smacker/go-tree-sitter/cpp"
 )
 
-// maxSignatureLen caps stored signatures to keep index entries compact.
-const maxSignatureLen = 200
-
-// truncateSignature caps a signature at maxSignatureLen, appending "..." when trimmed.
-func truncateSignature(sig string) string {
-	if len(sig) <= maxSignatureLen {
-		return sig
-	}
-	return sig[:maxSignatureLen] + "..."
-}
-
 // CPPParser extracts structured information from C++ source files using tree-sitter.
 type CPPParser struct {
 	srcRoot  string
