@@ -12,6 +12,17 @@ import (
 	"github.com/smacker/go-tree-sitter/cpp"
 )
 
+// maxSignatureLen caps stored signatures to keep index entries compact.
+const maxSignatureLen = 200
+
+// truncateSignature caps a signature at maxSignatureLen, appending "..." when trimmed.
+func truncateSignature(sig string) string {
+	if len(sig) <= maxSignatureLen {
+		return sig
+	}
+	return sig[:maxSignatureLen] + "..."
+}
+
 // CPPParser extracts structured information from C++ source files using tree-sitter.
 type CPPParser struct {
 	srcRoot  string
@@ -369,18 +380,16 @@ func (p *CPPParser) extractStructOrUnion(node *sitter.Node, ctx *cppParseContext
 	if len(ctx.namespaces) > 0 {
 		qualName = ctx.qualifiedName(name)
 	}
-	if ctx.template != "" {
-		qualName = ctx.template + " " + qualName
-	}
 
 	typeInfo := &TypeInfo{
-		Name:     qualName,
-		Kind:     kind,
-		Doc:      doc,
-		File:     ctx.filePath,
-		Line:     int(node.StartPoint().Row) + 1,
-		Exported: true,
-		ASTHash:  hashString(node.Content(ctx.content)),
+		Name:      qualName,
+		Kind:      kind,
+		Signature: ctx.template,
+		Doc:       doc,
+		File:      ctx.filePath,
+		Line:      int(node.StartPoint().Row) + 1,
+		Exported:  true,
+		ASTHash:   hashString(node.Content(ctx.content)),
 	}
 
 	// Extract fields and methods from struct body.
@@ -458,18 +467,16 @@ func (p *CPPParser) extractClass(node *sitter.Node, ctx *cppParseContext) *TypeI
 	if len(ctx.namespaces) > 0 {
 		qualName = ctx.qualifiedName(name)
 	}
-	if ctx.template != "" {
-		qualName = ctx.template + " " + qualName
-	}
 
 	typeInfo := &TypeInfo{
-		Name:     qualName,
-		Kind:     "class",
-		Doc:      doc,
-		File:     ctx.filePath,
-		Line:     int(node.StartPoint().Row) + 1,
-		Exported: true,
-		ASTHash:  hashString(node.Content(ctx.content)),
+		Name:      qualName,
+		Kind:      "class",
+		Signature: ctx.template,
+		Doc:       doc,
+		File:      ctx.filePath,
+		Line:      int(node.StartPoint().Row) + 1,
+		Exported:  true,
+		ASTHash:   hashString(node.Content(ctx.content)),
 	}
 
 	// Extract methods and fields from class body.
@@ -681,10 +688,7 @@ func (p *CPPParser) extractConstructorDecl(
 		return nil
 	}
 
-	sig := strings.TrimSpace(strings.TrimSuffix(node.Content(ctx.content), ";"))
-	if len(sig) > 200 {
-		sig = sig[:200] + "..."
-	}
+	sig := truncateSignature(strings.TrimSpace(strings.TrimSuffix(node.Content(ctx.content), ";")))
 	doc := extractPrecedingComment(node, ctx.content)
 
 	return &FunctionInfo{
@@ -793,10 +797,7 @@ func (p *CPPParser) buildSignature(node *sitter.Node, ctx *cppParseContext) stri
 		sig = ctx.template + " " + sig
 	}
 
-	if len(sig) > 200 {
-		sig = sig[:200] + "..."
-	}
-	return sig
+	return truncateSignature(sig)
 }
 
 // buildDeclarationSignature builds a signature from a declaration (prototype).
@@ -807,19 +808,12 @@ func (p *CPPParser) buildDeclarationSignature(node *sitter.Node, ctx *cppParseCo
 		sig = ctx.template + " " + sig
 	}
 
-	if len(sig) > 200 {
-		sig = sig[:200] + "..."
-	}
-	return sig
+	return truncateSignature(sig)
 }
 
 // buildFieldDeclSignature builds a signature from a field_declaration (method decl).
 func (p *CPPParser) buildFieldDeclSignature(node *sitter.Node, ctx *cppParseContext) string {
-	sig := strings.TrimSpace(strings.TrimSuffix(node.Content(ctx.content), ";"))
-	if len(sig) > 200 {
-		sig = sig[:200] + "..."
-	}
-	return sig
+	return truncateSignature(strings.TrimSpace(strings.TrimSuffix(node.Content(ctx.content), ";")))
 }
 
 // extractCPPNameWithQualifier extracts the name and any class qualifier from a declarator.

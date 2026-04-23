@@ -326,19 +326,12 @@ func extractCSignature(node *sitter.Node, content []byte) string {
 	// Take everything before the function body.
 	body := node.ChildByFieldName("body")
 	if body != nil {
-		sig := strings.TrimSpace(string(content[node.StartByte():body.StartByte()]))
-		if len(sig) > 200 {
-			sig = sig[:200] + "..."
-		}
-		return sig
+		return truncateSignature(strings.TrimSpace(string(content[node.StartByte():body.StartByte()])))
 	}
 	// Fallback: first line.
 	text := node.Content(content)
 	if idx := strings.Index(text, "{"); idx > 0 {
 		text = strings.TrimSpace(text[:idx])
 	}
-	if len(text) > 200 {
-		text = text[:200] + "..."
-	}
-	return text
+	return truncateSignature(text)
 }

@@ -351,13 +351,17 @@ func TestCPPParser(t *testing.T) {
 		t.Fatal("container.hpp not found in parsed files")
 	}
 
-	// Should have template class with namespace-qualified name.
-	container := findType(hppInfo.Types, "template<typename T> testlib::collections::Container")
+	// Should have template class with namespace-qualified name and
+	// template parameters carried in the Signature field.
+	container := findType(hppInfo.Types, "testlib::collections::Container")
 	if container == nil {
 		t.Error("template class Container not found in container.hpp")
 	} else {
 		if container.Kind != "class" {
 			t.Errorf("Container.Kind = %q, want %q", container.Kind, "class")
+		}
+		if container.Signature != "template<typename T>" {
+			t.Errorf("Container.Signature = %q, want %q", container.Signature, "template<typename T>")
 		}
 		// Should have methods.
 		if len(container.Methods) == 0 {

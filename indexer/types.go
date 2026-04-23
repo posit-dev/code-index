@@ -63,6 +63,8 @@ type TypeInfo struct {
 	Name string `json:"name"`
 	// Kind describes the type (e.g., "struct", "interface", "class", "enum", "typedef").
 	Kind string `json:"kind"`
+	// Signature is the full type signature (e.g., C++ template parameters like "template<typename T>").
+	Signature string `json:"signature,omitempty"`
 	// Doc is the documentation comment.
 	Doc string `json:"doc,omitempty"`
 	// File is the relative file path.
