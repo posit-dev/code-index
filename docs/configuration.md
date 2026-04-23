@@ -91,7 +91,9 @@ Each source object defines a directory to index:
 | `javascript` | `.js`, `.jsx` | tree-sitter (same as typescript) |
 | `python` | `.py` | tree-sitter — functions, classes, decorators, docstrings |
 | `c` | `.c`, `.h` | tree-sitter — functions, structs, enums, typedefs, Doxygen |
-| `cpp` | `.cpp`, `.cc`, `.hpp`, `.cxx`, `.hxx`, `.h` | tree-sitter — functions, classes, structs, namespaces, templates, enums, typedefs, Doxygen |
+| `cpp` | `.cpp`, `.cc`, `.hpp`, `.cxx`, `.hxx` | tree-sitter — functions, classes, structs, namespaces, templates, enums, typedefs, Doxygen |
+
+> **Note:** `.h` files are handled by the `c` parser, not `cpp`. This avoids double-parsing when a project configures both `c` and `cpp` sources over the same tree. C++ projects with `.h` headers should configure a `c` source pointing at the header directories.
 | `r` | `.R`, `.r` | Native Rscript with regex fallback — functions, roxygen, S4/R6 classes |
 | `markdown` | `.md`, `.qmd` | Regex — headings as sections, YAML front matter |
 
