@@ -52,6 +52,9 @@ interface CodeIndexConfig {
     account?: string;
     profiles?: string[];
   };
+  search?: {
+    alpha?: number;
+  };
 }
 
 // --- Database discovery ---
@@ -463,10 +466,23 @@ async function embedQuery(
 
 // --- Database search ---
 
+const FTS5_SPECIAL_CHARS = /[*"(){}+\-]/g;
+const FTS5_RESERVED = new Set(["and", "or", "not", "near"]);
+
+function sanitizeFTS5Query(query: string): string {
+  const terms = query
+    .split(/\s+/)
+    .map((t) => t.replace(FTS5_SPECIAL_CHARS, ""))
+    .filter((t) => t.length > 0 && !FTS5_RESERVED.has(t.toLowerCase()));
+  return terms.join(" OR ");
+}
+
 function searchDatabase(
   dbPath: string,
   queryEmbedding: number[],
-  maxResults: number
+  queryText: string,
+  maxResults: number,
+  alpha: number
 ): Array<{
   rank: number;
   similarity: number;
@@ -476,23 +492,112 @@ function searchDatabase(
   sqliteVec.load(db);
 
   try {
-    const stmt = db.prepare(`
-      SELECT v.rowid, v.distance,
-        c.doc_id, c.kind, c.name, c.signature,
-        c.file, c.line, c.receiver, c.package, c.summary, c.doc
+    if (alpha >= 1.0) {
+      return vectorOnlySearch(db, queryEmbedding, maxResults);
+    }
+
+    // Step 1 — Vector candidates (3x over-fetch for fusion)
+    const vecLimit = maxResults * 3;
+    const vecRows = db.prepare(`
+      SELECT v.rowid, v.distance, c.doc_id
       FROM vec_items v
       JOIN code_items c ON c.id = v.rowid
       WHERE v.embedding MATCH ?
         AND k = ?
       ORDER BY v.distance
-    `);
-
-    const rows = stmt.all(
+    `).all(
       JSON.stringify(queryEmbedding),
-      maxResults
+      vecLimit
     ) as Array<{
       rowid: number;
       distance: number;
+      doc_id: string;
+    }>;
+
+    const vecScores = new Map<string, number>();
+    for (const row of vecRows) {
+      const score = Math.max(0, Math.min(1, 1 - row.distance));
+      vecScores.set(row.doc_id, score);
+    }
+
+    // Step 2 — BM25 candidates
+    const bm25Scores = new Map<string, number>();
+    const ftsQuery = sanitizeFTS5Query(queryText);
+    if (ftsQuery.length > 0) {
+      try {
+        const ftsRows = db.prepare(`
+          SELECT c.doc_id, code_items_fts.rank AS bm25_score
+          FROM code_items_fts
+          JOIN code_items c ON c.id = code_items_fts.rowid
+          WHERE code_items_fts MATCH ?
+          ORDER BY code_items_fts.rank
+          LIMIT ?
+        `).all(ftsQuery, vecLimit) as Array<{
+          doc_id: string;
+          bm25_score: number;
+        }>;
+
+        for (const row of ftsRows) {
+          bm25Scores.set(row.doc_id, -row.bm25_score);
+        }
+      } catch {
+        // FTS5 table may not exist in older databases
+      }
+    }
+
+    // Step 3 — Normalize and combine
+    const allDocIds = new Set([
+      ...vecScores.keys(),
+      ...bm25Scores.keys(),
+    ]);
+
+    const vecValues = [...vecScores.values()];
+    const bm25Values = [...bm25Scores.values()];
+
+    const minVec = vecValues.length
+      ? Math.min(...vecValues) : 0;
+    const maxVec = vecValues.length
+      ? Math.max(...vecValues) : 0;
+    const minBm25 = bm25Values.length
+      ? Math.min(...bm25Values) : 0;
+    const maxBm25 = bm25Values.length
+      ? Math.max(...bm25Values) : 0;
+
+    const vecRange = maxVec - minVec;
+    const bm25Range = maxBm25 - minBm25;
+
+    const scored: Array<{ docId: string; hybridScore: number }> = [];
+    for (const docId of allDocIds) {
+      const rawVec = vecScores.get(docId);
+      const rawBm25 = bm25Scores.get(docId);
+
+      const vecNorm = rawVec === undefined
+        ? 0
+        : vecRange === 0 ? 1.0 : (rawVec - minVec) / vecRange;
+      const bm25Norm = rawBm25 === undefined
+        ? 0
+        : bm25Range === 0 ? 1.0 : (rawBm25 - minBm25) / bm25Range;
+
+      const hybridScore =
+        alpha * vecNorm + (1 - alpha) * bm25Norm;
+      scored.push({ docId, hybridScore });
+    }
+
+    scored.sort((a, b) => b.hybridScore - a.hybridScore);
+    const topDocs = scored.slice(0, maxResults);
+
+    if (topDocs.length === 0) return [];
+
+    // Step 4 — Fetch metadata for top results
+    const placeholders = topDocs.map(() => "?").join(",");
+    const metaRows = db.prepare(`
+      SELECT doc_id, kind, name, signature,
+        file, line, receiver, package, summary, doc
+      FROM code_items
+      WHERE doc_id IN (${placeholders})
+    `).all(
+      ...topDocs.map((d) => d.docId)
+    ) as Array<{
       doc_id: string;
       kind: string;
       name: string;
@@ -505,25 +610,89 @@ function searchDatabase(
       doc: string | null;
     }>;
 
-    return rows.map((row, i) => {
-      const similarity = Math.max(0, 1 - row.distance);
-      const metadata: Record<string, string> = {
-        kind: row.kind,
-        name: row.name,
-        file: row.file,
-        line: String(row.line),
-      };
-      if (row.signature) metadata["signature"] = row.signature;
-      if (row.receiver) metadata["receiver"] = row.receiver;
-      if (row.package) metadata["package"] = row.package;
-      if (row.summary) metadata["summary"] = row.summary;
-      if (row.doc) metadata["doc"] = row.doc;
+    const metaByDocId = new Map(
+      metaRows.map((r) => [r.doc_id, r])
+    );
 
-      return { rank: i + 1, similarity, metadata };
-    });
+    return topDocs
+      .filter((d) => metaByDocId.has(d.docId))
+      .map((d, i) => {
+        const row = metaByDocId.get(d.docId)!;
+        const metadata: Record<string, string> = {
+          kind: row.kind,
+          name: row.name,
+          file: row.file,
+          line: String(row.line),
+        };
+        if (row.signature) metadata["signature"] = row.signature;
+        if (row.receiver) metadata["receiver"] = row.receiver;
+        if (row.package) metadata["package"] = row.package;
+        if (row.summary) metadata["summary"] = row.summary;
+        if (row.doc) metadata["doc"] = row.doc;
+
+        return {
+          rank: i + 1,
+          similarity: d.hybridScore,
+          metadata,
+        };
+      });
   } finally {
     db.close();
   }
+}
+
+function vectorOnlySearch(
+  db: ReturnType<typeof Database>,
+  queryEmbedding: number[],
+  maxResults: number
+): Array<{
+  rank: number;
+  similarity: number;
+  metadata: Record<string, string>;
+}> {
+  const rows = db.prepare(`
+    SELECT v.rowid, v.distance,
+      c.doc_id, c.kind, c.name, c.signature,
+      c.file, c.line, c.receiver, c.package, c.summary, c.doc
+    FROM vec_items v
+    JOIN code_items c ON c.id = v.rowid
+    WHERE v.embedding MATCH ?
+      AND k = ?
+    ORDER BY v.distance
+  `).all(
+    JSON.stringify(queryEmbedding),
+    maxResults
+  ) as Array<{
+    rowid: number;
+    distance: number;
+    doc_id: string;
+    kind: string;
+    name: string;
+    signature: string | null;
+    file: string;
+    line: number;
+    receiver: string | null;
+    package: string | null;
+    summary: string | null;
+    doc: string | null;
+  }>;
+
+  return rows.map((row, i) => {
+    const similarity = Math.max(0, 1 - row.distance);
+    const metadata: Record<string, string> = {
+      kind: row.kind,
+      name: row.name,
+      file: row.file,
+      line: String(row.line),
+    };
+    if (row.signature) metadata["signature"] = row.signature;
+    if (row.receiver) metadata["receiver"] = row.receiver;
+    if (row.package) metadata["package"] = row.package;
+    if (row.summary) metadata["summary"] = row.summary;
+    if (row.doc) metadata["doc"] = row.doc;
+
+    return { rank: i + 1, similarity, metadata };
+  });
 }
 
 // --- MCP tool registration ---
@@ -596,10 +765,13 @@ export function registerCodeSearchTool(server: McpServer): void {
         const queryEmbedding = await embedQuery(parsed.query, config);
 
         // Search the database.
+        const alpha = config.search?.alpha ?? 0.6;
         const results = searchDatabase(
           dbPath,
           queryEmbedding,
-          parsed.maxResults
+          parsed.query,
+          parsed.maxResults,
+          alpha
         );
 
         // Format results.

@@ -22,16 +22,16 @@ jobs:
         run: sudo apt-get install -y libsqlite3-dev
 
       - name: Build
-        run: go build ./cmd/code-index/
+        run: go build -tags sqlite_fts5 ./cmd/code-index/
 
       - name: Test
-        run: go test ./...
+        run: go test -tags sqlite_fts5 ./...
 
       - name: Lint
         uses: golangci/golangci-lint-action@v7
         with:
           version: v2.11.2
-          args: ./...
+          args: --build-tags sqlite_fts5 ./...
 
   mcp-lint:
     runs-on: ubuntu-latest

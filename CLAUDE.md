@@ -98,9 +98,9 @@ See `docs/` for full documentation:
 ### Building and testing
 
 ```bash
-go build ./cmd/code-index/        # Build CLI
-go test ./...                      # Run tests
-cd mcp && npx tsc --noEmit        # TypeScript check
+go build -tags sqlite_fts5 ./cmd/code-index/   # Build CLI
+go test -tags sqlite_fts5 ./...                 # Run tests
+cd mcp && npx tsc --noEmit                      # TypeScript check
 ```
 
 ### Release process

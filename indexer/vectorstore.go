@@ -13,7 +13,9 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
+	"strings"
 
 	sqlite_vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
 	_ "github.com/mattn/go-sqlite3"
@@ -84,6 +86,10 @@ func OpenVectorStore(outputDir string, dimensions int) (*VectorStore, error) {
 		return nil, fmt.Errorf("initializing schema: %w", err)
 	}
 
+	if err := backfillFTS(db); err != nil {
+		return nil, fmt.Errorf("backfilling FTS index: %w", err)
+	}
+
 	// Store the dimensions.
 	if _, err := db.Exec(`INSERT INTO metadata (key, value) VALUES ('embedding_dimensions', ?)
 		ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
@@ -123,6 +129,18 @@ func initSchema(db *sql.DB, dimensions int) error {
 		fmt.Sprintf(`CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
 			embedding float[%d] distance_metric=cosine
 		)`, dimensions),
+		`CREATE VIRTUAL TABLE IF NOT EXISTS code_items_fts USING fts5(
+			doc_id,
+			content,
+			kind,
+			name,
+			signature,
+			file,
+			receiver,
+			package,
+			summary,
+			doc
+		)`,
 	}
 
 	for _, stmt := range stmts {
@@ -182,6 +200,19 @@ func (vs *VectorStore) AddDocument(ctx context.Context, id, content string, embe
 		return fmt.Errorf("getting row ID: %w", err)
 	}
 
+	// Delete old FTS entry (best-effort, mirrors vec_items pattern).
+	_, _ = tx.ExecContext(ctx,
+		"DELETE FROM code_items_fts WHERE rowid = ?", rowID)
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO code_items_fts(rowid, doc_id, content, kind, name,
+			signature, file, receiver, package, summary, doc)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		rowID, id, content, meta.Kind, meta.Name, meta.Signature,
+		meta.File, meta.Receiver, meta.Package, meta.Summary, doc)
+	if err != nil {
+		return fmt.Errorf("inserting FTS entry: %w", err)
+	}
+
 	// Delete existing vector if present, then insert.
 	// sqlite-vec virtual tables don't support INSERT OR REPLACE.
 	vecJSON, err := json.Marshal(embedding)
@@ -206,6 +237,7 @@ type SearchResult struct {
 	ID         string
 	Content    string
 	Similarity float32
+	Score      float32
 	Metadata   map[string]string
 }
 
@@ -291,6 +323,314 @@ func (vs *VectorStore) Search(ctx context.Context, queryEmbedding []float32, max
 	}
 
 	return results, rows.Err()
+}
+
+// backfillFTS populates the FTS5 index from code_items when the FTS table
+// exists but is empty (e.g., after upgrading an older database).
+func backfillFTS(db *sql.DB) error {
+	var itemCount, ftsCount int
+	if err := db.QueryRow(
+		"SELECT COUNT(*) FROM code_items").Scan(&itemCount); err != nil {
+		return err
+	}
+	if itemCount == 0 {
+		return nil
+	}
+	if err := db.QueryRow(
+		"SELECT COUNT(*) FROM code_items_fts").Scan(&ftsCount); err != nil {
+		return err
+	}
+	if ftsCount > 0 {
+		return nil
+	}
+	_, err := db.Exec(`
+		INSERT INTO code_items_fts(rowid, doc_id, content, kind, name,
+			signature, file, receiver, package, summary, doc)
+		SELECT id, doc_id, content, kind, name, signature,
+			file, receiver, package, summary, doc
+		FROM code_items`)
+	return err
+}
+
+func sanitizeFTS5Query(query string) string {
+	reserved := map[string]bool{
+		"AND": true, "OR": true, "NOT": true, "NEAR": true,
+	}
+	special := `*"(){}+-`
+	terms := strings.Fields(query)
+	var clean []string
+	for _, t := range terms {
+		var b strings.Builder
+		for _, ch := range t {
+			if !strings.ContainsRune(special, ch) {
+				b.WriteRune(ch)
+			}
+		}
+		s := b.String()
+		if s == "" || reserved[strings.ToUpper(s)] {
+			continue
+		}
+		clean = append(clean, s)
+	}
+	if len(clean) == 0 {
+		return ""
+	}
+	return strings.Join(clean, " OR ")
+}
+
+func normalizeScores(
+	scores map[string]float64,
+) map[string]float64 {
+	if len(scores) == 0 {
+		return scores
+	}
+	minVal, maxVal := math.Inf(1), math.Inf(-1)
+	for _, v := range scores {
+		if v < minVal {
+			minVal = v
+		}
+		if v > maxVal {
+			maxVal = v
+		}
+	}
+	out := make(map[string]float64, len(scores))
+	for k, v := range scores {
+		if maxVal == minVal {
+			out[k] = 1.0
+		} else {
+			out[k] = (v - minVal) / (maxVal - minVal)
+		}
+	}
+	return out
+}
+
+func (vs *VectorStore) fetchVectorCandidates(
+	ctx context.Context,
+	queryEmbedding []float32,
+	limit int,
+) (map[string]float64, error) {
+	vecJSON, err := json.Marshal(queryEmbedding)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling query: %w", err)
+	}
+	rows, err := vs.db.QueryContext(ctx, `
+		SELECT c.doc_id, v.distance
+		FROM vec_items v
+		JOIN code_items c ON c.id = v.rowid
+		WHERE v.embedding MATCH ?
+		  AND k = ?
+		ORDER BY v.distance
+	`, string(vecJSON), limit)
+	if err != nil {
+		return nil, fmt.Errorf("querying vectors: %w", err)
+	}
+	defer func() {
+		if cerr := rows.Close(); cerr != nil {
+			log.Printf("warning: closing rows: %v", cerr)
+		}
+	}()
+	scores := make(map[string]float64)
+	for rows.Next() {
+		var docID string
+		var distance float64
+		if err := rows.Scan(&docID, &distance); err != nil {
+			return nil, fmt.Errorf("scanning vector result: %w", err)
+		}
+		sim := 1.0 - distance
+		if sim < 0 {
+			sim = 0
+		}
+		if math.IsNaN(sim) {
+			sim = 0
+		}
+		scores[docID] = sim
+	}
+	return scores, rows.Err()
+}
+
+func (vs *VectorStore) fetchBM25Candidates(
+	ctx context.Context,
+	queryText string,
+	limit int,
+) (map[string]float64, error) {
+	sanitized := sanitizeFTS5Query(queryText)
+	if sanitized == "" {
+		return nil, nil
+	}
+	rows, err := vs.db.QueryContext(ctx, `
+		SELECT c.doc_id, code_items_fts.rank AS bm25_score
+		FROM code_items_fts
+		JOIN code_items c ON c.id = code_items_fts.rowid
+		WHERE code_items_fts MATCH ?
+		ORDER BY code_items_fts.rank
+		LIMIT ?
+	`, sanitized, limit)
+	if err != nil {
+		return nil, fmt.Errorf("querying FTS: %w", err)
+	}
+	defer func() {
+		if cerr := rows.Close(); cerr != nil {
+			log.Printf("warning: closing rows: %v", cerr)
+		}
+	}()
+	scores := make(map[string]float64)
+	for rows.Next() {
+		var docID string
+		var bm25Score float64
+		if err := rows.Scan(&docID, &bm25Score); err != nil {
+			return nil, fmt.Errorf("scanning FTS result: %w", err)
+		}
+		// FTS5 rank is negative (lower = more relevant); negate for positive scores.
+		scores[docID] = -bm25Score
+	}
+	return scores, rows.Err()
+}
+
+func (vs *VectorStore) fetchMetadataByDocIDs(
+	ctx context.Context,
+	docIDs []string,
+) (map[string]SearchResult, error) {
+	if len(docIDs) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(docIDs))
+	args := make([]any, len(docIDs))
+	for i, id := range docIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	query := fmt.Sprintf(`
+		SELECT doc_id, content, kind, name, signature,
+			file, line, receiver, package, summary, doc
+		FROM code_items
+		WHERE doc_id IN (%s)
+	`, strings.Join(placeholders, ","))
+	rows, err := vs.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("fetching metadata: %w", err)
+	}
+	defer func() {
+		if cerr := rows.Close(); cerr != nil {
+			log.Printf("warning: closing rows: %v", cerr)
+		}
+	}()
+	results := make(map[string]SearchResult, len(docIDs))
+	for rows.Next() {
+		var (
+			docID, content, kind, name string
+			file, receiver, pkg, summary string
+			signature, doc               sql.NullString
+			line                         int
+		)
+		err := rows.Scan(&docID, &content, &kind, &name,
+			&signature, &file, &line, &receiver, &pkg,
+			&summary, &doc)
+		if err != nil {
+			return nil, fmt.Errorf("scanning metadata: %w", err)
+		}
+		meta := map[string]string{
+			"kind": kind,
+			"name": name,
+			"file": file,
+			"line": strconv.Itoa(line),
+		}
+		if signature.Valid && signature.String != "" {
+			meta["signature"] = signature.String
+		}
+		if receiver != "" {
+			meta["receiver"] = receiver
+		}
+		if pkg != "" {
+			meta["package"] = pkg
+		}
+		if summary != "" {
+			meta["summary"] = summary
+		}
+		if doc.Valid && doc.String != "" {
+			meta["doc"] = doc.String
+		}
+		results[docID] = SearchResult{
+			ID:       docID,
+			Content:  content,
+			Metadata: meta,
+		}
+	}
+	return results, rows.Err()
+}
+
+// HybridSearch combines vector similarity with BM25 keyword matching.
+// Alpha controls the balance: 1.0 = pure vector, 0.0 = pure BM25.
+func (vs *VectorStore) HybridSearch(
+	ctx context.Context,
+	queryEmbedding []float32,
+	queryText string,
+	maxResults int,
+	alpha float64,
+) ([]SearchResult, error) {
+	if alpha >= 1.0 {
+		return vs.Search(ctx, queryEmbedding, maxResults)
+	}
+
+	expandedLimit := maxResults * 3
+	vecScores, err := vs.fetchVectorCandidates(
+		ctx, queryEmbedding, expandedLimit)
+	if err != nil {
+		return nil, err
+	}
+
+	bm25Scores, err := vs.fetchBM25Candidates(
+		ctx, queryText, expandedLimit)
+	if err != nil {
+		return nil, err
+	}
+
+	vecNorm := normalizeScores(vecScores)
+	bm25Norm := normalizeScores(bm25Scores)
+
+	candidates := make(map[string]bool)
+	for id := range vecNorm {
+		candidates[id] = true
+	}
+	for id := range bm25Norm {
+		candidates[id] = true
+	}
+
+	type rankedDoc struct {
+		docID       string
+		hybridScore float64
+		vecSim      float64
+	}
+	rl := make([]rankedDoc, 0, len(candidates))
+	for id := range candidates {
+		vn := vecNorm[id]
+		bn := bm25Norm[id]
+		h := alpha*vn + (1-alpha)*bn
+		rl = append(rl, rankedDoc{id, h, vecScores[id]})
+	}
+	sort.Slice(rl, func(i, j int) bool {
+		return rl[i].hybridScore > rl[j].hybridScore
+	})
+	if len(rl) > maxResults {
+		rl = rl[:maxResults]
+	}
+
+	docIDs := make([]string, len(rl))
+	for i, r := range rl {
+		docIDs[i] = r.docID
+	}
+	metaMap, err := vs.fetchMetadataByDocIDs(ctx, docIDs)
+	if err != nil {
+		return nil, err
+	}
+
+	results := make([]SearchResult, 0, len(rl))
+	for _, r := range rl {
+		sr := metaMap[r.docID]
+		sr.Score = float32(r.hybridScore)
+		sr.Similarity = float32(r.vecSim)
+		results = append(results, sr)
+	}
+	return results, nil
 }
 
 // Count returns the number of documents in the store.

@@ -12,6 +12,8 @@ builds:
     binary: code-index
     env:
       - CGO_ENABLED=1
+    tags:
+      - sqlite_fts5
     goos:
       - linux
       - darwin

@@ -24,6 +24,15 @@ type IndexConfig struct {
 	AWS AWSConfig `json:"aws"`
 	// R configuration for the native R parser.
 	R RConfig `json:"r,omitempty"`
+	// Search configuration for hybrid search tuning.
+	Search SearchConfig `json:"search,omitempty"`
+}
+
+// SearchConfig defines search behavior parameters.
+type SearchConfig struct {
+	// Alpha controls the balance between vector and BM25 search.
+	// 1.0 = pure vector, 0.0 = pure BM25. Default: 0.6.
+	Alpha float64 `json:"alpha,omitempty"`
 }
 
 // RConfig defines R-specific settings for native parsing.
@@ -134,6 +143,9 @@ func (c *IndexConfig) applyDefaults() {
 	}
 	if c.Storage.S3Prefix == "" {
 		c.Storage.S3Prefix = "vectors"
+	}
+	if c.Search.Alpha == 0 {
+		c.Search.Alpha = 0.6
 	}
 }
 

@@ -67,8 +67,9 @@ func runSearch(cmd *cobra.Command, args []string) error {
 	}
 	defer store.Close() //nolint:errcheck
 
-	// Search.
-	results, err := store.Search(ctx, queryEmbedding, searchMaxResults)
+	// Search using hybrid BM25 + vector.
+	results, err := store.HybridSearch(
+		ctx, queryEmbedding, query, searchMaxResults, config.Search.Alpha)
 	if err != nil {
 		return fmt.Errorf("searching: %w", err)
 	}
@@ -85,6 +86,7 @@ func runSearch(cmd *cobra.Command, args []string) error {
 	if searchJSON {
 		type jsonResult struct {
 			Rank       int               `json:"rank"`
+			Score      float32           `json:"score"`
 			Similarity float32           `json:"similarity"`
 			Metadata   map[string]string `json:"metadata"`
 		}
@@ -92,6 +94,7 @@ func runSearch(cmd *cobra.Command, args []string) error {
 		for i, r := range results {
 			jsonResults = append(jsonResults, jsonResult{
 				Rank:       i + 1,
+				Score:      r.Score,
 				Similarity: r.Similarity,
 				Metadata:   r.Metadata,
 			})
@@ -115,7 +118,11 @@ func runSearch(cmd *cobra.Command, args []string) error {
 		summary := r.Metadata["summary"]
 		doc := r.Metadata["doc"]
 
-		fmt.Printf("%d. [%s] %s (%.1f%% match)\n", i+1, kind, name, r.Similarity*100)
+		score := r.Similarity
+		if r.Score > 0 {
+			score = r.Score
+		}
+		fmt.Printf("%d. [%s] %s (%.1f%% match)\n", i+1, kind, name, score*100)
 
 		if sig != "" {
 			fmt.Printf("   %s\n", sig)
