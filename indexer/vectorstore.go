@@ -412,37 +412,16 @@ func sanitizeFTS5Query(query string) string {
 	return strings.Join(clean, " OR ")
 }
 
-func normalizeScores(
-	scores map[string]float64,
-) map[string]float64 {
-	if len(scores) == 0 {
-		return scores
-	}
-	minVal, maxVal := math.Inf(1), math.Inf(-1)
-	for _, v := range scores {
-		if v < minVal {
-			minVal = v
-		}
-		if v > maxVal {
-			maxVal = v
-		}
-	}
-	out := make(map[string]float64, len(scores))
-	for k, v := range scores {
-		if maxVal == minVal {
-			out[k] = 1.0
-		} else {
-			out[k] = (v - minVal) / (maxVal - minVal)
-		}
-	}
-	return out
+type vecCandidate struct {
+	docID      string
+	similarity float64
 }
 
 func (vs *VectorStore) fetchVectorCandidates(
 	ctx context.Context,
 	queryEmbedding []float32,
 	limit int,
-) (map[string]float64, error) {
+) ([]vecCandidate, error) {
 	vecJSON, err := json.Marshal(queryEmbedding)
 	if err != nil {
 		return nil, fmt.Errorf("marshaling query: %w", err)
@@ -463,7 +442,7 @@ func (vs *VectorStore) fetchVectorCandidates(
 			log.Printf("warning: closing rows: %v", cerr)
 		}
 	}()
-	scores := make(map[string]float64)
+	var results []vecCandidate
 	for rows.Next() {
 		var docID string
 		var distance float64
@@ -477,22 +456,22 @@ func (vs *VectorStore) fetchVectorCandidates(
 		if math.IsNaN(sim) {
 			sim = 0
 		}
-		scores[docID] = sim
+		results = append(results, vecCandidate{docID, sim})
 	}
-	return scores, rows.Err()
+	return results, rows.Err()
 }
 
 func (vs *VectorStore) fetchBM25Candidates(
 	ctx context.Context,
 	queryText string,
 	limit int,
-) (map[string]float64, error) {
+) ([]string, error) {
 	sanitized := sanitizeFTS5Query(queryText)
 	if sanitized == "" {
 		return nil, nil
 	}
 	rows, err := vs.db.QueryContext(ctx, `
-		SELECT c.doc_id, code_items_fts.rank AS bm25_score
+		SELECT c.doc_id
 		FROM code_items_fts
 		JOIN code_items c ON c.id = code_items_fts.rowid
 		WHERE code_items_fts MATCH ?
@@ -507,17 +486,15 @@ func (vs *VectorStore) fetchBM25Candidates(
 			log.Printf("warning: closing rows: %v", cerr)
 		}
 	}()
-	scores := make(map[string]float64)
+	var docIDs []string
 	for rows.Next() {
 		var docID string
-		var bm25Score float64
-		if err := rows.Scan(&docID, &bm25Score); err != nil {
+		if err := rows.Scan(&docID); err != nil {
 			return nil, fmt.Errorf("scanning FTS result: %w", err)
 		}
-		// FTS5 rank is negative (lower = more relevant); negate for positive scores.
-		scores[docID] = -bm25Score
+		docIDs = append(docIDs, docID)
 	}
-	return scores, rows.Err()
+	return docIDs, rows.Err()
 }
 
 func (vs *VectorStore) fetchMetadataByDocIDs(
@@ -592,8 +569,11 @@ func (vs *VectorStore) fetchMetadataByDocIDs(
 	return results, rows.Err()
 }
 
-// HybridSearch combines vector similarity with BM25 keyword matching.
-// Alpha controls the balance: 1.0 = pure vector, 0.0 = pure BM25.
+const rrfK = 60
+
+// HybridSearch combines vector similarity with BM25 keyword matching
+// using Reciprocal Rank Fusion (RRF). Alpha controls the weight balance:
+// 1.0 = pure vector, 0.0 = pure BM25.
 func (vs *VectorStore) HybridSearch(
 	ctx context.Context,
 	queryEmbedding []float32,
@@ -606,43 +586,68 @@ func (vs *VectorStore) HybridSearch(
 	}
 
 	expandedLimit := maxResults * 3
-	vecScores, err := vs.fetchVectorCandidates(
+	vecCandidates, err := vs.fetchVectorCandidates(
 		ctx, queryEmbedding, expandedLimit)
 	if err != nil {
 		return nil, err
 	}
 
-	bm25Scores, err := vs.fetchBM25Candidates(
+	bm25DocIDs, err := vs.fetchBM25Candidates(
 		ctx, queryText, expandedLimit)
 	if err != nil {
 		return nil, err
 	}
 
-	vecNorm := normalizeScores(vecScores)
-	bm25Norm := normalizeScores(bm25Scores)
+	return vs.fuseRRF(
+		ctx, vecCandidates, bm25DocIDs, maxResults, alpha)
+}
 
-	candidates := make(map[string]bool)
-	for id := range vecNorm {
-		candidates[id] = true
+func (vs *VectorStore) fuseRRF(
+	ctx context.Context,
+	vecCandidates []vecCandidate,
+	bm25DocIDs []string,
+	maxResults int,
+	alpha float64,
+) ([]SearchResult, error) {
+	vecRanks := make(map[string]int, len(vecCandidates))
+	vecSims := make(map[string]float64, len(vecCandidates))
+	for i, c := range vecCandidates {
+		vecRanks[c.docID] = i + 1
+		vecSims[c.docID] = c.similarity
 	}
-	for id := range bm25Norm {
-		candidates[id] = true
+
+	bm25Ranks := make(map[string]int, len(bm25DocIDs))
+	for i, id := range bm25DocIDs {
+		bm25Ranks[id] = i + 1
 	}
 
 	type rankedDoc struct {
-		docID       string
-		hybridScore float64
-		vecSim      float64
+		docID    string
+		rrfScore float64
+		vecSim   float64
 	}
-	rl := make([]rankedDoc, 0, len(candidates))
-	for id := range candidates {
-		vn := vecNorm[id]
-		bn := bm25Norm[id]
-		h := alpha*vn + (1-alpha)*bn
-		rl = append(rl, rankedDoc{id, h, vecScores[id]})
+
+	seen := make(map[string]bool)
+	var rl []rankedDoc
+	for _, c := range vecCandidates {
+		seen[c.docID] = true
 	}
+	for _, id := range bm25DocIDs {
+		seen[id] = true
+	}
+	for id := range seen {
+		score := 0.0
+		if rank, ok := vecRanks[id]; ok {
+			score += alpha / float64(rrfK+rank)
+		}
+		if rank, ok := bm25Ranks[id]; ok {
+			score += (1 - alpha) / float64(rrfK+rank)
+		}
+		rl = append(rl, rankedDoc{id, score, vecSims[id]})
+	}
+
 	sort.Slice(rl, func(i, j int) bool {
-		return rl[i].hybridScore > rl[j].hybridScore
+		return rl[i].rrfScore > rl[j].rrfScore
 	})
 	if len(rl) > maxResults {
 		rl = rl[:maxResults]
@@ -657,14 +662,45 @@ func (vs *VectorStore) HybridSearch(
 		return nil, err
 	}
 
+	rawScores := make([]float64, len(rl))
+	for i, r := range rl {
+		rawScores[i] = r.rrfScore
+	}
+	displayScores := normalizeForDisplay(rawScores)
+
 	results := make([]SearchResult, 0, len(rl))
-	for _, r := range rl {
+	for i, r := range rl {
 		sr := metaMap[r.docID]
-		sr.Score = float32(r.hybridScore)
+		sr.Score = float32(displayScores[i])
 		sr.Similarity = float32(r.vecSim)
 		results = append(results, sr)
 	}
 	return results, nil
+}
+
+// normalizeForDisplay maps raw scores to 0–1 for human-readable output.
+func normalizeForDisplay(scores []float64) []float64 {
+	if len(scores) == 0 {
+		return nil
+	}
+	minS, maxS := scores[0], scores[0]
+	for _, s := range scores[1:] {
+		if s < minS {
+			minS = s
+		}
+		if s > maxS {
+			maxS = s
+		}
+	}
+	out := make([]float64, len(scores))
+	for i, s := range scores {
+		if maxS == minS {
+			out[i] = 1.0
+		} else {
+			out[i] = (s - minS) / (maxS - minS)
+		}
+	}
+	return out
 }
 
 // Count returns the number of documents in the store.

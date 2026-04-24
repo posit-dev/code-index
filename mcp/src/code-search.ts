@@ -496,6 +496,8 @@ function searchDatabase(
       return vectorOnlySearch(db, queryEmbedding, maxResults);
     }
 
+    const RRF_K = 60;
+
     // Step 1 — Vector candidates (3x over-fetch for fusion)
     const vecLimit = maxResults * 3;
     const vecRows = db.prepare(`
@@ -514,77 +516,60 @@ function searchDatabase(
       doc_id: string;
     }>;
 
-    const vecScores = new Map<string, number>();
-    for (const row of vecRows) {
-      const score = Math.max(0, Math.min(1, 1 - row.distance));
-      vecScores.set(row.doc_id, score);
-    }
+    const vecRanks = new Map<string, number>();
+    const vecSims = new Map<string, number>();
+    vecRows.forEach((row, i) => {
+      vecRanks.set(row.doc_id, i + 1);
+      vecSims.set(
+        row.doc_id, Math.max(0, Math.min(1, 1 - row.distance)));
+    });
 
     // Step 2 — BM25 candidates
-    const bm25Scores = new Map<string, number>();
+    const bm25Ranks = new Map<string, number>();
     const ftsQuery = sanitizeFTS5Query(queryText);
     if (ftsQuery.length > 0) {
       try {
         const ftsRows = db.prepare(`
-          SELECT c.doc_id, code_items_fts.rank AS bm25_score
+          SELECT c.doc_id
           FROM code_items_fts
           JOIN code_items c ON c.id = code_items_fts.rowid
           WHERE code_items_fts MATCH ?
           ORDER BY code_items_fts.rank
           LIMIT ?
-        `).all(ftsQuery, vecLimit) as Array<{
-          doc_id: string;
-          bm25_score: number;
-        }>;
+        `).all(ftsQuery, vecLimit) as Array<{ doc_id: string }>;
 
-        for (const row of ftsRows) {
-          bm25Scores.set(row.doc_id, -row.bm25_score);
-        }
+        ftsRows.forEach((row, i) => {
+          bm25Ranks.set(row.doc_id, i + 1);
+        });
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
         if (!msg.includes("no such table")) throw e;
       }
     }
 
-    // Step 3 — Normalize and combine
+    // Step 3 — Reciprocal Rank Fusion
     const allDocIds = new Set([
-      ...vecScores.keys(),
-      ...bm25Scores.keys(),
+      ...vecRanks.keys(),
+      ...bm25Ranks.keys(),
     ]);
 
-    const vecValues = [...vecScores.values()];
-    const bm25Values = [...bm25Scores.values()];
-
-    const minVec = vecValues.length
-      ? vecValues.reduce((a, b) => Math.min(a, b), Infinity) : 0;
-    const maxVec = vecValues.length
-      ? vecValues.reduce((a, b) => Math.max(a, b), -Infinity) : 0;
-    const minBm25 = bm25Values.length
-      ? bm25Values.reduce((a, b) => Math.min(a, b), Infinity) : 0;
-    const maxBm25 = bm25Values.length
-      ? bm25Values.reduce((a, b) => Math.max(a, b), -Infinity) : 0;
-
-    const vecRange = maxVec - minVec;
-    const bm25Range = maxBm25 - minBm25;
-
-    const scored: Array<{ docId: string; hybridScore: number }> = [];
+    const scored: Array<{
+      docId: string; rrfScore: number;
+    }> = [];
     for (const docId of allDocIds) {
-      const rawVec = vecScores.get(docId);
-      const rawBm25 = bm25Scores.get(docId);
-
-      const vecNorm = rawVec === undefined
-        ? 0
-        : vecRange === 0 ? 1.0 : (rawVec - minVec) / vecRange;
-      const bm25Norm = rawBm25 === undefined
-        ? 0
-        : bm25Range === 0 ? 1.0 : (rawBm25 - minBm25) / bm25Range;
-
-      const hybridScore =
-        alpha * vecNorm + (1 - alpha) * bm25Norm;
-      scored.push({ docId, hybridScore });
+      let score = 0;
+      const vecRank = vecRanks.get(docId);
+      if (vecRank !== undefined) {
+        score += alpha / (RRF_K + vecRank);
+      }
+      const bm25Rank = bm25Ranks.get(docId);
+      if (bm25Rank !== undefined) {
+        score += (1 - alpha) / (RRF_K + bm25Rank);
+      }
+      scored.push({ docId, rrfScore: score });
     }
 
-    scored.sort((a, b) => b.hybridScore - a.hybridScore);
+    scored.sort((a, b) => b.rrfScore - a.rrfScore);
     const topDocs = scored.slice(0, maxResults);
 
     if (topDocs.length === 0) return [];
@@ -615,6 +600,13 @@ function searchDatabase(
       metaRows.map((r) => [r.doc_id, r])
     );
 
+    const rawScores = topDocs.map((d) => d.rrfScore);
+    const normed = normalizeForDisplay(rawScores);
+    const displayMap = new Map<string, number>();
+    topDocs.forEach((d, i) => {
+      displayMap.set(d.docId, normed[i] ?? 0);
+    });
+
     return topDocs
       .filter((d) => metaByDocId.has(d.docId))
       .map((d, i) => {
@@ -633,13 +625,25 @@ function searchDatabase(
 
         return {
           rank: i + 1,
-          similarity: d.hybridScore,
+          similarity: displayMap.get(d.docId) ?? 0,
           metadata,
         };
       });
   } finally {
     db.close();
   }
+}
+
+function normalizeForDisplay(scores: number[]): number[] {
+  if (scores.length === 0) return [];
+  let minS = Infinity, maxS = -Infinity;
+  for (const s of scores) {
+    if (s < minS) minS = s;
+    if (s > maxS) maxS = s;
+  }
+  const range = maxS - minS;
+  return scores.map(
+    (s) => range === 0 ? 1.0 : (s - minS) / range);
 }
 
 function vectorOnlySearch(
