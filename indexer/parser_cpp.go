@@ -157,12 +157,6 @@ func (p *CPPParser) extractDeclarations(node *sitter.Node, ctx *cppParseContext,
 				fileInfo.Functions = append(fileInfo.Functions, *fn)
 			}
 
-		case "declaration":
-			// Function declarations (prototypes) in headers.
-			if fn := p.extractFunctionDeclaration(child, ctx, ""); fn != nil {
-				fileInfo.Functions = append(fileInfo.Functions, *fn)
-			}
-
 		case "struct_specifier", "union_specifier":
 			if t := p.extractStructOrUnion(child, ctx); t != nil {
 				fileInfo.Types = append(fileInfo.Types, *t)
@@ -249,10 +243,6 @@ func (p *CPPParser) extractTemplate(node *sitter.Node, ctx *cppParseContext, fil
 			if fn := p.extractFunction(child, ctx, ""); fn != nil {
 				fileInfo.Functions = append(fileInfo.Functions, *fn)
 			}
-		case "declaration":
-			if fn := p.extractFunctionDeclaration(child, ctx, ""); fn != nil {
-				fileInfo.Functions = append(fileInfo.Functions, *fn)
-			}
 		}
 	}
 }
@@ -282,6 +272,7 @@ func (p *CPPParser) extractFunction(node *sitter.Node, ctx *cppParseContext, rec
 		qualName = ctx.qualifiedName(name)
 	}
 
+	bodyText := extractBodyText(node, ctx.content)
 	returns, calls := extractBodyInfo(node, ctx.content)
 
 	return &FunctionInfo{
@@ -294,6 +285,7 @@ func (p *CPPParser) extractFunction(node *sitter.Node, ctx *cppParseContext, rec
 		Exported:  true,
 		ASTHash:   hashString(node.Content(ctx.content)),
 		SigHash:   hashString(sig),
+		Body:      bodyText,
 		Returns:   returns,
 		Calls:     calls,
 	}
@@ -626,6 +618,7 @@ func (p *CPPParser) extractInlineMethod(
 
 	sig := p.buildSignature(node, ctx)
 	doc := extractPrecedingComment(node, ctx.content)
+	bodyText := extractBodyText(node, ctx.content)
 	returns, calls := extractBodyInfo(node, ctx.content)
 
 	return &FunctionInfo{
@@ -638,6 +631,7 @@ func (p *CPPParser) extractInlineMethod(
 		Exported:  access == "public",
 		ASTHash:   hashString(node.Content(ctx.content)),
 		SigHash:   hashString(sig),
+		Body:      bodyText,
 		Returns:   returns,
 		Calls:     calls,
 	}

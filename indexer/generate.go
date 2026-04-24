@@ -470,15 +470,17 @@ func (g *Generator) generateFunctionDoc(fn *FunctionInfo, fileInfo *FileInfo) (s
 	prompt.WriteString("Respond with ONLY the summary text, no formatting.\n\n")
 	fmt.Fprintf(&prompt, "File: %s (package %s)\n", fileInfo.Path, fileInfo.Package)
 	fmt.Fprintf(&prompt, "Signature: %s\n", fn.Signature)
-	if len(fn.Returns) > 0 {
-		fmt.Fprintf(&prompt, "Returns: %s\n", strings.Join(fn.Returns, ", "))
-	}
-	if len(fn.Calls) > 0 {
-		fmt.Fprintf(&prompt, "Calls: %s\n", strings.Join(fn.Calls, ", "))
-	} else if len(fn.Returns) > 0 {
-		// Only show "Calls: (none)" when we have body info (Returns populated)
-		// to signal this is a stub, not just a declaration without body info.
-		fmt.Fprintf(&prompt, "Calls: (none)\n")
+	if fn.Body != "" {
+		fmt.Fprintf(&prompt, "Body:\n%s\n", fn.Body)
+	} else if len(fn.Returns) > 0 || len(fn.Calls) > 0 {
+		if len(fn.Returns) > 0 {
+			fmt.Fprintf(&prompt, "Returns: %s\n", strings.Join(fn.Returns, ", "))
+		}
+		if len(fn.Calls) > 0 {
+			fmt.Fprintf(&prompt, "Calls: %s\n", strings.Join(fn.Calls, ", "))
+		} else {
+			fmt.Fprintf(&prompt, "Calls: (none)\n")
+		}
 	}
 	if fn.Doc != "" {
 		fmt.Fprintf(&prompt, "Doc: %s\n", fn.Doc)

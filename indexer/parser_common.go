@@ -9,12 +9,28 @@ import (
 
 const maxSignatureLen = 200
 const maxReturnLen = 200
+const maxBodyLen = 4000
 
 func truncateSignature(sig string) string {
 	if len(sig) <= maxSignatureLen {
 		return sig
 	}
 	return sig[:maxSignatureLen] + "..."
+}
+
+// extractBodyText returns the function body text if it fits within
+// maxBodyLen. Returns empty string for declarations without bodies
+// or bodies that exceed the cap.
+func extractBodyText(node *sitter.Node, content []byte) string {
+	body := node.ChildByFieldName("body")
+	if body == nil {
+		return ""
+	}
+	text := body.Content(content)
+	if len(text) > maxBodyLen {
+		return ""
+	}
+	return text
 }
 
 // extractBodyInfo extracts return expressions and deduplicated callee

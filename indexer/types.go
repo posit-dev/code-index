@@ -55,6 +55,8 @@ type FunctionInfo struct {
 	ASTHash string `json:"ast_hash"`
 	// SigHash is a hash of just the function signature (params + returns).
 	SigHash string `json:"sig_hash"`
+	// Body is the function body text, included when under the size cap.
+	Body string `json:"body,omitempty"`
 	// Returns contains return expressions extracted from the function body.
 	Returns []string `json:"returns,omitempty"`
 	// Calls contains deduplicated callee expressions from the function body.
