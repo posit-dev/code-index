@@ -37,7 +37,7 @@ func extractBodyInfo(
 			child := n.Child(i)
 			nodeType := child.Type()
 
-			if nodeType == "function_definition" {
+			if nodeType == "function_definition" || nodeType == "lambda_expression" {
 				continue
 			}
 
