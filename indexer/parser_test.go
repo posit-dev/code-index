@@ -441,3 +441,133 @@ func TestRParser(t *testing.T) {
 		t.Error("weighted_mean should have a doc comment from roxygen")
 	}
 }
+
+// --- C++ Body Extraction ---
+
+func TestCPPBodyExtraction(t *testing.T) {
+	srcRoot := filepath.Join(testdataDir(), "c")
+	parser := NewCPPParser(srcRoot, nil)
+	result := NewParseResult()
+	if err := parser.Parse(result); err != nil {
+		t.Fatalf("Parse() error: %v", err)
+	}
+
+	var fileInfo *FileInfo
+	for _, f := range result.Files {
+		if filepath.Base(f.Path) == "body_extraction.cpp" {
+			fileInfo = f
+			break
+		}
+	}
+	if fileInfo == nil {
+		t.Fatal("body_extraction.cpp not found in parsed files")
+	}
+
+	// WHEN parsing isFeatureEnabled (stub function)
+	// THEN Returns = ["false"], Calls = empty.
+	fn := findFunc(fileInfo.Functions, "isFeatureEnabled")
+	if fn == nil {
+		t.Fatal("function isFeatureEnabled not found")
+	}
+	assertSliceEqual(t, "isFeatureEnabled.Returns", fn.Returns, []string{"false"})
+	assertSliceEmpty(t, "isFeatureEnabled.Calls", fn.Calls)
+
+	// WHEN parsing processValue (multi-return with calls)
+	// THEN Returns contains "-1" and "result",
+	// AND Calls contains "logError", "transform", "notify" (deduplicated).
+	fn = findFunc(fileInfo.Functions, "processValue")
+	if fn == nil {
+		t.Fatal("function processValue not found")
+	}
+	assertSliceContains(t, "processValue.Returns", fn.Returns, "-1")
+	assertSliceContains(t, "processValue.Returns", fn.Returns, "result")
+	assertSliceContains(t, "processValue.Calls", fn.Calls, "logError")
+	assertSliceContains(t, "processValue.Calls", fn.Calls, "transform")
+	assertSliceContains(t, "processValue.Calls", fn.Calls, "notify")
+
+	// WHEN parsing initialize (void function, no returns)
+	// THEN Returns = empty, Calls contains all three callees.
+	fn = findFunc(fileInfo.Functions, "initialize")
+	if fn == nil {
+		t.Fatal("function initialize not found")
+	}
+	assertSliceEmpty(t, "initialize.Returns", fn.Returns)
+	assertSliceContains(t, "initialize.Calls", fn.Calls, "loadConfig")
+	assertSliceContains(t, "initialize.Calls", fn.Calls, "setupLogging")
+	assertSliceContains(t, "initialize.Calls", fn.Calls, "registerHandlers")
+
+	// WHEN parsing formatName (delegation wrapper)
+	// THEN Returns contains "fmt::format" call expression,
+	// AND Calls contains "fmt::format".
+	fn = findFunc(fileInfo.Functions, "formatName")
+	if fn == nil {
+		t.Fatal("function formatName not found")
+	}
+	assertSliceContainsSubstring(t, "formatName.Returns", fn.Returns, "fmt::format")
+	assertSliceContains(t, "formatName.Calls", fn.Calls, "fmt::format")
+
+	// WHEN parsing Cache::lookup (inline method)
+	// THEN Returns contains "true" and "false",
+	// AND Calls contains "map_.find", "stats_.recordHit", "stats_.recordMiss".
+	cacheType := findType(fileInfo.Types, "Cache")
+	if cacheType == nil {
+		t.Fatal("type Cache not found")
+	}
+	lookup := findFunc(cacheType.Methods, "lookup")
+	if lookup == nil {
+		t.Fatal("method Cache::lookup not found")
+	}
+	assertSliceContains(t, "lookup.Returns", lookup.Returns, "true")
+	assertSliceContains(t, "lookup.Returns", lookup.Returns, "false")
+	assertSliceContains(t, "lookup.Calls", lookup.Calls, "map_.find")
+	assertSliceContains(t, "lookup.Calls", lookup.Calls, "stats_.recordHit")
+	assertSliceContains(t, "lookup.Calls", lookup.Calls, "stats_.recordMiss")
+}
+
+// assertSliceEqual checks that got and want have the same elements in order.
+func assertSliceEqual(t *testing.T, label string, got, want []string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Errorf("%s: got %v, want %v", label, got, want)
+		return
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Errorf("%s[%d]: got %q, want %q", label, i, got[i], want[i])
+		}
+	}
+}
+
+// assertSliceEmpty checks that the slice is nil or empty.
+func assertSliceEmpty(t *testing.T, label string, got []string) {
+	t.Helper()
+	if len(got) != 0 {
+		t.Errorf("%s: got %v, want empty", label, got)
+	}
+}
+
+// assertSliceContains checks that the slice contains the given value.
+func assertSliceContains(t *testing.T, label string, slice []string, value string) {
+	t.Helper()
+	for _, s := range slice {
+		if s == value {
+			return
+		}
+	}
+	t.Errorf("%s: %v does not contain %q", label, slice, value)
+}
+
+// assertSliceContainsSubstring checks that at least one element contains the substring.
+func assertSliceContainsSubstring(t *testing.T, label string, slice []string, substr string) {
+	t.Helper()
+	for _, s := range slice {
+		if len(s) >= len(substr) {
+			for i := 0; i <= len(s)-len(substr); i++ {
+				if s[i:i+len(substr)] == substr {
+					return
+				}
+			}
+		}
+	}
+	t.Errorf("%s: no element in %v contains %q", label, slice, substr)
+}
