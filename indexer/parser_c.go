@@ -167,6 +167,8 @@ func (p *CParser) extractFunction(node *sitter.Node, content []byte, filePath st
 	doc := extractPrecedingComment(node, content)
 	line := int(node.StartPoint().Row) + 1
 
+	returns, calls := extractBodyInfo(node, content)
+
 	return &FunctionInfo{
 		Name:      name,
 		Signature: sig,
@@ -176,6 +178,8 @@ func (p *CParser) extractFunction(node *sitter.Node, content []byte, filePath st
 		Exported:  true, // C doesn't have export visibility at syntax level
 		ASTHash:   hashString(node.Content(content)),
 		SigHash:   hashString(sig),
+		Returns:   returns,
+		Calls:     calls,
 	}
 }
 

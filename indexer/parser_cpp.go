@@ -812,67 +812,6 @@ func (p *CPPParser) buildFieldDeclSignature(node *sitter.Node, ctx *cppParseCont
 	return truncateSignature(strings.TrimSpace(strings.TrimSuffix(node.Content(ctx.content), ";")))
 }
 
-const maxReturnLen = 200
-
-// extractBodyInfo extracts return expressions and deduplicated callee
-// names from a function_definition node's body.
-func extractBodyInfo(
-	node *sitter.Node,
-	content []byte,
-) (returns []string, calls []string) {
-	body := node.ChildByFieldName("body")
-	if body == nil {
-		return nil, nil
-	}
-
-	seen := make(map[string]bool)
-	var walk func(n *sitter.Node)
-	walk = func(n *sitter.Node) {
-		for i := 0; i < int(n.ChildCount()); i++ {
-			child := n.Child(i)
-			nodeType := child.Type()
-
-			if nodeType == "function_definition" {
-				continue
-			}
-
-			switch nodeType {
-			case "return_statement":
-				text := child.Content(content)
-				expr := strings.TrimSpace(
-					strings.TrimSuffix(
-						strings.TrimSpace(
-							strings.TrimPrefix(text, "return"),
-						),
-						";",
-					),
-				)
-				if expr == "" {
-					break
-				}
-				if len(expr) > maxReturnLen {
-					expr = expr[:maxReturnLen] + "..."
-				}
-				returns = append(returns, expr)
-
-			case "call_expression":
-				callee := child.ChildByFieldName("function")
-				if callee != nil {
-					name := callee.Content(content)
-					if !seen[name] {
-						seen[name] = true
-						calls = append(calls, name)
-					}
-				}
-			}
-
-			walk(child)
-		}
-	}
-	walk(body)
-
-	return returns, calls
-}
 
 // extractCPPNameWithQualifier extracts the name and any class qualifier from a declarator.
 // For "Foo::bar", returns ("bar", "Foo"). For "bar", returns ("bar", "").
