@@ -219,6 +219,9 @@ func addTestDoc(
 
 func TestHybridSearchKeywordBoost(t *testing.T) {
 	store := newTestStore(t, 4)
+	if !store.HasFTS() {
+		t.Skip("FTS5 not available")
+	}
 	ctx := context.Background()
 
 	// WHEN two documents have identical embeddings but different text.
@@ -326,6 +329,9 @@ func TestHybridSearchAlphaOne(t *testing.T) {
 
 func TestHybridSearchIdenticalVectorScores(t *testing.T) {
 	store := newTestStore(t, 4)
+	if !store.HasFTS() {
+		t.Skip("FTS5 not available")
+	}
 	ctx := context.Background()
 
 	// WHEN documents have identical embeddings but different text.

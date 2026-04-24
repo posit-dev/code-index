@@ -30,6 +30,7 @@ type VectorStore struct {
 	db         *sql.DB
 	dbPath     string
 	dimensions int
+	hasFTS     bool
 }
 
 // OpenVectorStore opens or creates the vector database at the given path.
@@ -82,12 +83,15 @@ func OpenVectorStore(outputDir string, dimensions int) (*VectorStore, error) {
 		return nil, fmt.Errorf("embedding dimensions changed (was %d, now %d) — run with --reset to rebuild the database", storedDims, dimensions)
 	}
 
-	if err := initSchema(db, dimensions); err != nil {
+	hasFTS, err := initSchema(db, dimensions)
+	if err != nil {
 		return nil, fmt.Errorf("initializing schema: %w", err)
 	}
 
-	if err := backfillFTS(db); err != nil {
-		return nil, fmt.Errorf("backfilling FTS index: %w", err)
+	if hasFTS {
+		if err := backfillFTS(db); err != nil {
+			return nil, fmt.Errorf("backfilling FTS index: %w", err)
+		}
 	}
 
 	// Store the dimensions.
@@ -102,6 +106,7 @@ func OpenVectorStore(outputDir string, dimensions int) (*VectorStore, error) {
 		db:         db,
 		dbPath:     dbPath,
 		dimensions: dimensions,
+		hasFTS:     hasFTS,
 	}, nil
 }
 
@@ -110,7 +115,13 @@ func (vs *VectorStore) Dimensions() int {
 	return vs.dimensions
 }
 
-func initSchema(db *sql.DB, dimensions int) error {
+// HasFTS returns whether FTS5 full-text search is available.
+func (vs *VectorStore) HasFTS() bool {
+	return vs.hasFTS
+}
+
+// initSchema creates the core tables and returns whether FTS5 is available.
+func initSchema(db *sql.DB, dimensions int) (bool, error) {
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS code_items (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -129,7 +140,18 @@ func initSchema(db *sql.DB, dimensions int) error {
 		fmt.Sprintf(`CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
 			embedding float[%d] distance_metric=cosine
 		)`, dimensions),
-		`CREATE VIRTUAL TABLE IF NOT EXISTS code_items_fts USING fts5(
+	}
+
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt); err != nil {
+			return false, fmt.Errorf("executing %q: %w", stmt[:60], err)
+		}
+	}
+
+	// FTS5 requires the sqlite_fts5 build tag. If unavailable, hybrid
+	// search degrades to vector-only silently.
+	_, err := db.Exec(`CREATE VIRTUAL TABLE IF NOT EXISTS code_items_fts
+		USING fts5(
 			doc_id UNINDEXED,
 			content,
 			kind,
@@ -140,15 +162,15 @@ func initSchema(db *sql.DB, dimensions int) error {
 			package,
 			summary,
 			doc
-		)`,
-	}
-
-	for _, stmt := range stmts {
-		if _, err := db.Exec(stmt); err != nil {
-			return fmt.Errorf("executing %q: %w", stmt[:60], err)
+		)`)
+	if err != nil {
+		if strings.Contains(err.Error(), "no such module") {
+			log.Printf("FTS5 not available — hybrid search disabled (build with -tags sqlite_fts5 to enable)")
+			return false, nil
 		}
+		return false, fmt.Errorf("creating FTS table: %w", err)
 	}
-	return nil
+	return true, nil
 }
 
 // DocumentMetadata holds the metadata stored alongside each vector.
@@ -200,18 +222,22 @@ func (vs *VectorStore) AddDocument(ctx context.Context, id, content string, embe
 		return fmt.Errorf("getting row ID: %w", err)
 	}
 
-	if _, err = tx.ExecContext(ctx,
-		"DELETE FROM code_items_fts WHERE rowid = ?", rowID); err != nil {
-		return fmt.Errorf("deleting old FTS entry: %w", err)
-	}
-	_, err = tx.ExecContext(ctx, `
-		INSERT INTO code_items_fts(rowid, doc_id, content, kind, name,
-			signature, file, receiver, package, summary, doc)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		rowID, id, content, meta.Kind, meta.Name, meta.Signature,
-		meta.File, meta.Receiver, meta.Package, meta.Summary, doc)
-	if err != nil {
-		return fmt.Errorf("inserting FTS entry: %w", err)
+	if vs.hasFTS {
+		if _, err = tx.ExecContext(ctx,
+			"DELETE FROM code_items_fts WHERE rowid = ?",
+			rowID); err != nil {
+			return fmt.Errorf("deleting old FTS entry: %w", err)
+		}
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO code_items_fts(rowid, doc_id, content, kind,
+				name, signature, file, receiver, package, summary, doc)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			rowID, id, content, meta.Kind, meta.Name,
+			meta.Signature, meta.File, meta.Receiver,
+			meta.Package, meta.Summary, doc)
+		if err != nil {
+			return fmt.Errorf("inserting FTS entry: %w", err)
+		}
 	}
 
 	// Delete existing vector if present, then insert.
@@ -575,7 +601,7 @@ func (vs *VectorStore) HybridSearch(
 	maxResults int,
 	alpha float64,
 ) ([]SearchResult, error) {
-	if alpha >= 1.0 {
+	if alpha >= 1.0 || !vs.hasFTS {
 		return vs.Search(ctx, queryEmbedding, maxResults)
 	}
 
@@ -682,7 +708,8 @@ func (vs *VectorStore) Reset(ctx context.Context) error {
 		return fmt.Errorf("creating metadata table: %w", err)
 	}
 
-	if err := initSchema(db, dims); err != nil {
+	hasFTS, err := initSchema(db, dims)
+	if err != nil {
 		return fmt.Errorf("reinitializing schema: %w", err)
 	}
 
@@ -694,6 +721,7 @@ func (vs *VectorStore) Reset(ctx context.Context) error {
 
 	success = true
 	vs.db = db
+	vs.hasFTS = hasFTS
 	return nil
 }
 
