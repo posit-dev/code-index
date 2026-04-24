@@ -200,9 +200,10 @@ func (vs *VectorStore) AddDocument(ctx context.Context, id, content string, embe
 		return fmt.Errorf("getting row ID: %w", err)
 	}
 
-	// Delete old FTS entry (best-effort, mirrors vec_items pattern).
-	_, _ = tx.ExecContext(ctx,
-		"DELETE FROM code_items_fts WHERE rowid = ?", rowID)
+	if _, err = tx.ExecContext(ctx,
+		"DELETE FROM code_items_fts WHERE rowid = ?", rowID); err != nil {
+		return fmt.Errorf("deleting old FTS entry: %w", err)
+	}
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO code_items_fts(rowid, doc_id, content, kind, name,
 			signature, file, receiver, package, summary, doc)
@@ -340,8 +341,14 @@ func backfillFTS(db *sql.DB) error {
 		"SELECT COUNT(*) FROM code_items_fts").Scan(&ftsCount); err != nil {
 		return err
 	}
-	if ftsCount > 0 {
+	if ftsCount >= itemCount {
 		return nil
+	}
+	if ftsCount > 0 {
+		if _, err := db.Exec(
+			"DELETE FROM code_items_fts"); err != nil {
+			return err
+		}
 	}
 	_, err := db.Exec(`
 		INSERT INTO code_items_fts(rowid, doc_id, content, kind, name,
@@ -352,11 +359,12 @@ func backfillFTS(db *sql.DB) error {
 	return err
 }
 
+var fts5Reserved = map[string]bool{
+	"AND": true, "OR": true, "NOT": true, "NEAR": true,
+}
+
 func sanitizeFTS5Query(query string) string {
-	reserved := map[string]bool{
-		"AND": true, "OR": true, "NOT": true, "NEAR": true,
-	}
-	special := `*"(){}+-`
+	special := `*"(){}+-:`
 	terms := strings.Fields(query)
 	var clean []string
 	for _, t := range terms {
@@ -367,7 +375,7 @@ func sanitizeFTS5Query(query string) string {
 			}
 		}
 		s := b.String()
-		if s == "" || reserved[strings.ToUpper(s)] {
+		if s == "" || fts5Reserved[strings.ToUpper(s)] {
 			continue
 		}
 		clean = append(clean, s)

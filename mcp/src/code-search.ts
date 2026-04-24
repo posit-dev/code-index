@@ -466,7 +466,7 @@ async function embedQuery(
 
 // --- Database search ---
 
-const FTS5_SPECIAL_CHARS = /[*"(){}+\-]/g;
+const FTS5_SPECIAL_CHARS = /[*"(){}+\-:]/g;
 const FTS5_RESERVED = new Set(["and", "or", "not", "near"]);
 
 function sanitizeFTS5Query(query: string): string {
@@ -556,13 +556,13 @@ function searchDatabase(
     const bm25Values = [...bm25Scores.values()];
 
     const minVec = vecValues.length
-      ? Math.min(...vecValues) : 0;
+      ? vecValues.reduce((a, b) => Math.min(a, b), Infinity) : 0;
     const maxVec = vecValues.length
-      ? Math.max(...vecValues) : 0;
+      ? vecValues.reduce((a, b) => Math.max(a, b), -Infinity) : 0;
     const minBm25 = bm25Values.length
-      ? Math.min(...bm25Values) : 0;
+      ? bm25Values.reduce((a, b) => Math.min(a, b), Infinity) : 0;
     const maxBm25 = bm25Values.length
-      ? Math.max(...bm25Values) : 0;
+      ? bm25Values.reduce((a, b) => Math.max(a, b), -Infinity) : 0;
 
     const vecRange = maxVec - minVec;
     const bm25Range = maxBm25 - minBm25;
