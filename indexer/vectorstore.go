@@ -662,46 +662,16 @@ func (vs *VectorStore) fuseRRF(
 		return nil, err
 	}
 
-	rawScores := make([]float64, len(rl))
-	for i, r := range rl {
-		rawScores[i] = r.rrfScore
-	}
-	displayScores := normalizeForDisplay(rawScores)
-
 	results := make([]SearchResult, 0, len(rl))
-	for i, r := range rl {
+	for _, r := range rl {
 		sr := metaMap[r.docID]
-		sr.Score = float32(displayScores[i])
+		sr.Score = float32(r.rrfScore)
 		sr.Similarity = float32(r.vecSim)
 		results = append(results, sr)
 	}
 	return results, nil
 }
 
-// normalizeForDisplay maps raw scores to 0–1 for human-readable output.
-func normalizeForDisplay(scores []float64) []float64 {
-	if len(scores) == 0 {
-		return nil
-	}
-	minS, maxS := scores[0], scores[0]
-	for _, s := range scores[1:] {
-		if s < minS {
-			minS = s
-		}
-		if s > maxS {
-			maxS = s
-		}
-	}
-	out := make([]float64, len(scores))
-	for i, s := range scores {
-		if maxS == minS {
-			out[i] = 1.0
-		} else {
-			out[i] = (s - minS) / (maxS - minS)
-		}
-	}
-	return out
-}
 
 // Count returns the number of documents in the store.
 func (vs *VectorStore) Count() int {

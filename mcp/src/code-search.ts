@@ -600,13 +600,6 @@ function searchDatabase(
       metaRows.map((r) => [r.doc_id, r])
     );
 
-    const rawScores = topDocs.map((d) => d.rrfScore);
-    const normed = normalizeForDisplay(rawScores);
-    const displayMap = new Map<string, number>();
-    topDocs.forEach((d, i) => {
-      displayMap.set(d.docId, normed[i] ?? 0);
-    });
-
     return topDocs
       .filter((d) => metaByDocId.has(d.docId))
       .map((d, i) => {
@@ -625,25 +618,13 @@ function searchDatabase(
 
         return {
           rank: i + 1,
-          similarity: displayMap.get(d.docId) ?? 0,
+          similarity: vecSims.get(d.docId) ?? 0,
           metadata,
         };
       });
   } finally {
     db.close();
   }
-}
-
-function normalizeForDisplay(scores: number[]): number[] {
-  if (scores.length === 0) return [];
-  let minS = Infinity, maxS = -Infinity;
-  for (const s of scores) {
-    if (s < minS) minS = s;
-    if (s > maxS) maxS = s;
-  }
-  const range = maxS - minS;
-  return scores.map(
-    (s) => range === 0 ? 1.0 : (s - minS) / range);
 }
 
 function vectorOnlySearch(
