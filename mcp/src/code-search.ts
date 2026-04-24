@@ -466,7 +466,7 @@ async function embedQuery(
 
 // --- Database search ---
 
-const FTS5_SPECIAL_CHARS = /[*"(){}+\-:]/g;
+const FTS5_SPECIAL_CHARS = /[*"(){}+\-:.^]/g;
 const FTS5_RESERVED = new Set(["and", "or", "not", "near"]);
 
 function sanitizeFTS5Query(query: string): string {

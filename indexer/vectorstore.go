@@ -364,7 +364,7 @@ var fts5Reserved = map[string]bool{
 }
 
 func sanitizeFTS5Query(query string) string {
-	special := `*"(){}+-:`
+	special := `*"(){}+-:.^`
 	terms := strings.Fields(query)
 	var clean []string
 	for _, t := range terms {

@@ -123,7 +123,12 @@ func runSearch(cmd *cobra.Command, args []string) error {
 		if alpha < 1.0 {
 			score = r.Score
 		}
-		fmt.Printf("%d. [%s] %s (%.1f%% match)\n", i+1, kind, name, score*100)
+		label := "match"
+		if alpha < 1.0 {
+			label = "relevance"
+		}
+		fmt.Printf("%d. [%s] %s (%.1f%% %s)\n",
+			i+1, kind, name, score*100, label)
 
 		if sig != "" {
 			fmt.Printf("   %s\n", sig)
