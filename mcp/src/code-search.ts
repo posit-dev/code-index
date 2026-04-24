@@ -540,8 +540,9 @@ function searchDatabase(
         for (const row of ftsRows) {
           bm25Scores.set(row.doc_id, -row.bm25_score);
         }
-      } catch {
-        // FTS5 table may not exist in older databases
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (!msg.includes("no such table")) throw e;
       }
     }
 

@@ -130,7 +130,7 @@ func initSchema(db *sql.DB, dimensions int) error {
 			embedding float[%d] distance_metric=cosine
 		)`, dimensions),
 		`CREATE VIRTUAL TABLE IF NOT EXISTS code_items_fts USING fts5(
-			doc_id,
+			doc_id UNINDEXED,
 			content,
 			kind,
 			name,

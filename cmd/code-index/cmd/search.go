@@ -68,8 +68,9 @@ func runSearch(cmd *cobra.Command, args []string) error {
 	defer store.Close() //nolint:errcheck
 
 	// Search using hybrid BM25 + vector.
+	alpha := *config.Search.Alpha
 	results, err := store.HybridSearch(
-		ctx, queryEmbedding, query, searchMaxResults, config.Search.Alpha)
+		ctx, queryEmbedding, query, searchMaxResults, alpha)
 	if err != nil {
 		return fmt.Errorf("searching: %w", err)
 	}
@@ -119,7 +120,7 @@ func runSearch(cmd *cobra.Command, args []string) error {
 		doc := r.Metadata["doc"]
 
 		score := r.Similarity
-		if r.Score > 0 {
+		if alpha < 1.0 {
 			score = r.Score
 		}
 		fmt.Printf("%d. [%s] %s (%.1f%% match)\n", i+1, kind, name, score*100)
